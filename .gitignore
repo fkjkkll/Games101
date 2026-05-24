@@ -1,0 +1,50 @@
+# Build directories
+build/
+Build/
+*/build/
+*/Build/
+out/
+*/out/
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+CMakeUserPresets.json
+
+# Compiled binaries
+*.exe
+*.dll
+*.obj
+*.o
+*.a
+*.lib
+*.so
+*.dylib
+
+# IDE
+.vs/
+.vscode/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Output images (rasterizer generates these)
+*.png
+*.jpg
+*.bmp
+*.tga
+
+# macOS
+.DS_Store
+
+# Misc
+资源备份/
+
+# Windows temp
+Thumbs.db
