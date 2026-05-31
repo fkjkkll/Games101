@@ -22,24 +22,41 @@ Eigen::Matrix4f get_view_matrix(Eigen::Vector3f eye_pos)
 Eigen::Matrix4f get_model_matrix(float rotation_angle)
 {
     Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
+    double pi = acos(-1);
 
-    // TODO: Implement this function
-    // Create the model matrix for rotating the triangle around the Z axis.
-    // Then return it.
+    model(0, 0) = cos(rotation_angle / 180.0 * pi);
+	model(1, 0) = sin(rotation_angle / 180.0 * pi);
+
+    model(0, 1) = -sin(rotation_angle / 180.0 * pi);
+	model(1, 1) = cos(rotation_angle / 180.0 * pi);
 
     return model;
 }
 
-Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio,
-                                      float zNear, float zFar)
+Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float zNear, float zFar)
 {
-    // Students will implement this function
-
     Eigen::Matrix4f projection = Eigen::Matrix4f::Identity();
+    double pi = acos(-1);
+    double t = tan(eye_fov / 2.0 / 180.0 * pi) * abs(zNear);
+    double b = -t;
+	double r = aspect_ratio * t;
+    double l = -r;
 
-    // TODO: Implement this function
-    // Create the projection matrix for the given parameters.
-    // Then return it.
+	// 近平面和远平面都应该是负数
+    zNear = -abs(zNear);
+    zFar = -abs(zFar);
+
+    projection(0, 0) = 2 * zNear / (r - l);
+
+	projection(1, 1) = 2 * zNear / (t - b);
+
+	projection(0, 2) = -(r + l) / (r - l);
+	projection(1, 2) = -(t + b) / (t - b);
+	projection(2, 2) = (zNear + zFar) / (zNear - zFar);
+    projection(3, 2) = 1;
+
+	projection(2, 3) = -2 * zNear * zFar / (zNear - zFar);
+	projection(3, 3) = 0;
 
     return projection;
 }
