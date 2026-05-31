@@ -24,11 +24,14 @@ Eigen::Matrix4f get_model_matrix(float rotation_angle)
     Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
     double pi = acos(-1);
 
-    model(0, 0) = cos(rotation_angle / 180.0 * pi);
-	model(1, 0) = sin(rotation_angle / 180.0 * pi);
-
-    model(0, 1) = -sin(rotation_angle / 180.0 * pi);
-	model(1, 1) = cos(rotation_angle / 180.0 * pi);
+	auto rotationRadian = rotation_angle / 180.0 * pi;
+    Eigen::Matrix4f rotationMatrix;
+    rotationMatrix << 
+        cos(rotationRadian), -sin(rotationRadian), 0, 0,
+        sin(rotationRadian), cos(rotationRadian), 0, 0,
+        0, 0, 1, 0,
+		0, 0, 0, 1;
+	model = rotationMatrix * model;
 
     return model;
 }
@@ -42,22 +45,29 @@ Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float z
 	double r = aspect_ratio * t;
     double l = -r;
 
-	// ½üÆ½ÃæºÍÔ¶Æ½Ãæ¶¼Ó¦¸ÃÊÇ¸ºÊý
+	// è¿‘å¹³é¢å’Œè¿œå¹³é¢éƒ½åº”è¯¥æ˜¯è´Ÿæ•°
     zNear = -abs(zNear);
     zFar = -abs(zFar);
 
-    projection(0, 0) = 2 * zNear / (r - l);
-
-	projection(1, 1) = 2 * zNear / (t - b);
-
-	projection(0, 2) = -(r + l) / (r - l);
-	projection(1, 2) = -(t + b) / (t - b);
-	projection(2, 2) = (zNear + zFar) / (zNear - zFar);
-    projection(3, 2) = 1;
-
-	projection(2, 3) = -2 * zNear * zFar / (zNear - zFar);
-	projection(3, 3) = 0;
-
+    Eigen::Matrix4f transitionMatrix;
+	transitionMatrix << 
+        1, 0, 0, -(r + l) / 2.0,
+        0, 1, 0, -(t + b) / 2.0,
+        0, 0, 1, -(zNear + zFar) / 2.0,
+        0, 0, 0, 1;
+	Eigen::Matrix4f scaleMatrix;
+    scaleMatrix << 
+        2.0 / (r - l), 0, 0, 0,
+        0, 2.0 / (t - b), 0, 0,
+        0, 0, 2.0 / (zNear - zFar), 0,
+		0, 0, 0, 1;
+    Eigen::Matrix4f persToOrthMatrix;
+    persToOrthMatrix << 
+        zNear, 0, 0, 0,
+        0, zNear, 0, 0,
+        0, 0, zNear + zFar, -zNear * zFar,
+		0, 0, 1, 0;
+	projection = scaleMatrix * transitionMatrix * persToOrthMatrix * projection;
     return projection;
 }
 
