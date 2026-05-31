@@ -22,9 +22,8 @@ Eigen::Matrix4f get_view_matrix(Eigen::Vector3f eye_pos)
 Eigen::Matrix4f get_model_matrix(float rotation_angle)
 {
     Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
-    double pi = acos(-1);
 
-	auto rotationRadian = rotation_angle / 180.0 * pi;
+	auto rotationRadian = rotation_angle / 180.0 * MY_PI;
     Eigen::Matrix4f rotationMatrix;
     rotationMatrix << 
         cos(rotationRadian), -sin(rotationRadian), 0, 0,
@@ -36,11 +35,40 @@ Eigen::Matrix4f get_model_matrix(float rotation_angle)
     return model;
 }
 
+/// <summary>
+/// 罗德里格斯旋转公式
+/// 参考1: https://www.bilibili.com/video/BV1X7411F744?spm_id_from=333.788.videopod.episodes&vd_source=5def309c50dba10ca2a52c71628df16d&p=4
+/// 参考2: https://zhuanlan.zhihu.com/p/451579313
+/// 参考3: https://immortalqx.github.io/2021/07/08/slam-learning-2/
+/// 参考4: https://www.bilibili.com/video/BV1qV411X79j/?spm_id_from=333.337.search-card.all.click&vd_source=5def309c50dba10ca2a52c71628df16d
+/// </summary>
+Eigen::Matrix4f get_rotation(Vector3f axis, float rotation_angle)
+{
+    Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
+    auto rotationRadian = rotation_angle / 180.0 * MY_PI;
+    Eigen::Matrix4f rotationMatrix;
+    rotationMatrix <<
+        cos(rotationRadian) + axis.x() * axis.x() * (1 - cos(rotationRadian)),
+        axis.x()* axis.y()* (1 - cos(rotationRadian)) - axis.z() * sin(rotationRadian),
+        axis.x()* axis.z()* (1 - cos(rotationRadian)) + axis.y() * sin(rotationRadian),
+        0,
+        axis.y()* axis.x()* (1 - cos(rotationRadian)) + axis.z() * sin(rotationRadian),
+        cos(rotationRadian) + axis.y() * axis.y() * (1 - cos(rotationRadian)),
+        axis.y()* axis.z()* (1 - cos(rotationRadian)) - axis.x() * sin(rotationRadian),
+        0,
+        axis.z()* axis.x()* (1 - cos(rotationRadian)) - axis.y() * sin(rotationRadian),
+        axis.z()* axis.y()* (1 - cos(rotationRadian)) + axis.x() * sin(rotationRadian),
+        cos(rotationRadian) + axis.z() * axis.z() * (1 - cos(rotationRadian)),
+        0,
+        0, 0, 0, 1;
+    model = rotationMatrix * model;
+    return model;
+}
+
 Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float zNear, float zFar)
 {
     Eigen::Matrix4f projection = Eigen::Matrix4f::Identity();
-    double pi = acos(-1);
-    double t = tan(eye_fov / 2.0 / 180.0 * pi) * abs(zNear);
+    double t = tan(eye_fov / 2.0 / 180.0 * MY_PI) * abs(zNear);
     double b = -t;
 	double r = aspect_ratio * t;
     double l = -r;
@@ -74,6 +102,8 @@ Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float z
 int main(int argc, const char** argv)
 {
     float angle = 0;
+    float axisAngle = 0;
+    Eigen::Vector3f axis = { -1, 0, 0 };
     bool command_line = false;
     std::string filename = "output.png";
 
@@ -89,7 +119,7 @@ int main(int argc, const char** argv)
 
     rst::rasterizer r(700, 700);
 
-    Eigen::Vector3f eye_pos = {0, 0, 5};
+    Eigen::Vector3f eye_pos = {0, 0, 10};
 
     std::vector<Eigen::Vector3f> pos{{2, 0, -2}, {0, 2, -2}, {-2, 0, -2}};
 
@@ -104,7 +134,7 @@ int main(int argc, const char** argv)
     if (command_line) {
         r.clear(rst::Buffers::Color | rst::Buffers::Depth);
 
-        r.set_model(get_model_matrix(angle));
+        r.set_model(get_rotation(axis, axisAngle) * get_model_matrix(angle));
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrix(45, 1, 0.1, 50));
 
@@ -120,7 +150,7 @@ int main(int argc, const char** argv)
     while (key != 27) {
         r.clear(rst::Buffers::Color | rst::Buffers::Depth);
 
-        r.set_model(get_model_matrix(angle));
+        r.set_model(get_rotation(axis, axisAngle) * get_model_matrix(angle));
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrix(45, 1, 0.1, 50));
 
@@ -138,6 +168,13 @@ int main(int argc, const char** argv)
         }
         else if (key == 'd') {
             angle -= 10;
+        }
+
+        if (key == 'w') {
+            axisAngle += 10;
+        }
+        else if (key == 's') {
+            axisAngle -= 10;
         }
     }
 
