@@ -11,11 +11,12 @@ Eigen::Matrix4f get_view_matrix(Eigen::Vector3f eye_pos)
     Eigen::Matrix4f view = Eigen::Matrix4f::Identity();
 
     Eigen::Matrix4f translate;
-    translate << 1, 0, 0, -eye_pos[0], 0, 1, 0, -eye_pos[1], 0, 0, 1,
-        -eye_pos[2], 0, 0, 0, 1;
+    translate << 1, 0, 0, -eye_pos[0],
+                 0, 1, 0, -eye_pos[1],
+                 0, 0, 1, -eye_pos[2],
+                 0, 0, 0, 1;
 
     view = translate * view;
-
     return view;
 }
 
@@ -23,14 +24,14 @@ Eigen::Matrix4f get_model_matrix(float rotation_angle)
 {
     Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
 
-	auto rotationRadian = rotation_angle / 180.0 * MY_PI;
+    auto rotationRadian = rotation_angle / 180.0 * MY_PI;
     Eigen::Matrix4f rotationMatrix;
     rotationMatrix << 
         cos(rotationRadian), -sin(rotationRadian), 0, 0,
         sin(rotationRadian), cos(rotationRadian), 0, 0,
         0, 0, 1, 0,
-		0, 0, 0, 1;
-	model = rotationMatrix * model;
+        0, 0, 0, 1;
+    model = rotationMatrix * model;
 
     return model;
 }
@@ -67,36 +68,39 @@ Eigen::Matrix4f get_rotation(Vector3f axis, float rotation_angle)
 
 Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float zNear, float zFar)
 {
-    Eigen::Matrix4f projection = Eigen::Matrix4f::Identity();
     double t = tan(eye_fov / 2.0 / 180.0 * MY_PI) * abs(zNear);
     double b = -t;
-	double r = aspect_ratio * t;
+    double r = aspect_ratio * t;
     double l = -r;
 
-	// 近平面和远平面都应该是负数
+    // 课件里近平面和远平面都应该是负数
     zNear = -abs(zNear);
     zFar = -abs(zFar);
 
+    // 缩放到[-1, 1]
+    Eigen::Matrix4f scaleMatrix;
+    scaleMatrix <<
+        2.0 / (r - l), 0, 0, 0,
+        0, 2.0 / (t - b), 0, 0,
+        0, 0, 2.0 / (zNear - zFar), 0,
+        0, 0, 0, 1;
+
+    // 平移到原点
     Eigen::Matrix4f transitionMatrix;
-	transitionMatrix << 
+    transitionMatrix <<
         1, 0, 0, -(r + l) / 2.0,
         0, 1, 0, -(t + b) / 2.0,
         0, 0, 1, -(zNear + zFar) / 2.0,
         0, 0, 0, 1;
-	Eigen::Matrix4f scaleMatrix;
-    scaleMatrix << 
-        2.0 / (r - l), 0, 0, 0,
-        0, 2.0 / (t - b), 0, 0,
-        0, 0, 2.0 / (zNear - zFar), 0,
-		0, 0, 0, 1;
+
+    // 透视到正交
     Eigen::Matrix4f persToOrthMatrix;
-    persToOrthMatrix << 
+    persToOrthMatrix <<
         zNear, 0, 0, 0,
         0, zNear, 0, 0,
         0, 0, zNear + zFar, -zNear * zFar,
-		0, 0, 1, 0;
-	projection = scaleMatrix * transitionMatrix * persToOrthMatrix * projection;
-    return projection;
+        0, 0, 1, 0;
+    return scaleMatrix * transitionMatrix * persToOrthMatrix;
 }
 
 int main(int argc, const char** argv)

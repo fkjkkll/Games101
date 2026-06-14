@@ -1,5 +1,6 @@
 // clang-format off
 #include <iostream>
+#include <cmath>
 #include <opencv2/opencv.hpp>
 #include "rasterizer.hpp"
 #include "global.hpp"
@@ -12,13 +13,12 @@ Eigen::Matrix4f get_view_matrix(Eigen::Vector3f eye_pos)
     Eigen::Matrix4f view = Eigen::Matrix4f::Identity();
 
     Eigen::Matrix4f translate;
-    translate << 1,0,0,-eye_pos[0],
-                 0,1,0,-eye_pos[1],
-                 0,0,1,-eye_pos[2],
-                 0,0,0,1;
+    translate << 1, 0, 0, -eye_pos[0],
+                 0, 1, 0, -eye_pos[1],
+                 0, 0, 1, -eye_pos[2],
+                 0, 0, 0, 1;
 
-    view = translate*view;
-
+    view = translate * view;
     return view;
 }
 
@@ -30,10 +30,39 @@ Eigen::Matrix4f get_model_matrix(float rotation_angle)
 
 Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float zNear, float zFar)
 {
-    // TODO: Copy-paste your implementation from the previous assignment.
-    Eigen::Matrix4f projection;
+    double t = tan(eye_fov / 2.0 / 180.0 * MY_PI) * abs(zNear);
+    double b = -t;
+    double r = aspect_ratio * t;
+    double l = -r;
 
-    return projection;
+    // 课件里近平面和远平面都应该是负数
+	zNear = -abs(zNear);
+	zFar = -abs(zFar);
+
+    // 缩放到[-1, 1]
+    Eigen::Matrix4f scaleMatrix;
+    scaleMatrix <<
+        2.0 / (r - l), 0, 0, 0,
+        0, 2.0 / (t - b), 0, 0,
+        0, 0, 2.0 / (zNear - zFar), 0,
+        0, 0, 0, 1;
+
+    // 平移到原点
+    Eigen::Matrix4f transitionMatrix;
+    transitionMatrix <<
+        1, 0, 0, -(r + l) / 2.0,
+        0, 1, 0, -(t + b) / 2.0,
+        0, 0, 1, -(zNear + zFar) / 2.0,
+        0, 0, 0, 1;
+
+    // 透视到正交
+    Eigen::Matrix4f persToOrthMatrix;
+    persToOrthMatrix <<
+        zNear, 0, 0, 0,
+        0, zNear, 0, 0,
+        0, 0, zNear + zFar, -zNear * zFar,
+        0, 0, 1, 0;
+    return scaleMatrix * transitionMatrix * persToOrthMatrix;
 }
 
 int main(int argc, const char** argv)
@@ -113,7 +142,6 @@ int main(int argc, const char** argv)
         r.set_projection(get_projection_matrix(45, 1, 0.1, 50));
 
         r.draw(pos_id, ind_id, col_id, rst::Primitive::Triangle);
-
         cv::Mat image(700, 700, CV_32FC3, r.frame_buffer().data());
         image.convertTo(image, CV_8UC3, 1.0f);
         cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
