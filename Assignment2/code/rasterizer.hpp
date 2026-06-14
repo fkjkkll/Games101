@@ -67,6 +67,11 @@ namespace rst
         void set_projection(const Eigen::Matrix4f& p);
 
         void set_pixel(const Eigen::Vector3f& point, const Eigen::Vector3f& color);
+		void set_sample_pixel(const Eigen::Vector3f& point, const Eigen::Vector3f& color);
+        void resolve_pixel();
+
+        void set_msaa(bool enable) { msaa_on = enable; }
+        bool get_msaa() const { return msaa_on; }
 
         void clear(Buffers buff);
 
@@ -89,11 +94,14 @@ namespace rst
         std::map<int, std::vector<Eigen::Vector3f>> col_buf;
 
         std::vector<Eigen::Vector3f> frame_buf;
+        std::vector<Eigen::Vector3f> frame_sample_buf;
         std::vector<float> depth_buf;
 
         int get_index(int x, int y);
+        int get_sample_index(int sx, int sy);
 
         int width, height;
+        bool msaa_on = true;
 
         int next_id = 0;
         int get_next_id() { return next_id++; }

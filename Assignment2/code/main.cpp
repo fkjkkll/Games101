@@ -114,6 +114,7 @@ int main(int argc, const char** argv)
 
     int key = 0;
     int frame_count = 0;
+    r.set_msaa(false);
 
     if (command_line)
     {
