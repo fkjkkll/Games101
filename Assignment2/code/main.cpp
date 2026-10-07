@@ -30,6 +30,13 @@ Eigen::Matrix4f get_model_matrix(float rotation_angle)
 {
     Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
 
+    Eigen::Matrix4f come;
+    come <<
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 2.5,
+        0, 0, 0, 1;
+
     float rotation_radian = rotation_angle / 180.0 * MY_PI;
     Eigen::Matrix4f rotation;
     rotation << 
@@ -38,7 +45,14 @@ Eigen::Matrix4f get_model_matrix(float rotation_angle)
         -sin(rotation_radian), 0, cos(rotation_radian), 0,
         0, 0, 0, 1;
 
-    model = rotation * model;
+    Eigen::Matrix4f back;
+    back <<
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, -2.5,
+        0, 0, 0, 1;
+
+    model = back * rotation * come * model;
 
     return model;
 }
@@ -102,12 +116,12 @@ int main(int argc, const char** argv)
 
     std::vector<Eigen::Vector3f> pos
             {
-                    {2, 0, -2},
+                    {2, 0, -1},
                     {0, 2, -2},
-                    {-2, 0, -2},
-                    {3.5, -1, -5},
-                    {2.5, 1.5, -5},
-                    {-1, 0.5, -5}
+                    {-2, 0, -3},
+                    {3.5, -1, -2.5},
+                    {2.5, 1.5, -3},
+                    {-1, 0.5, -3.5}
             };
 
     std::vector<Eigen::Vector3i> ind
@@ -168,6 +182,11 @@ int main(int argc, const char** argv)
         key = cv::waitKey(10);
 
         std::cout << "frame count: " << frame_count++ << '\n';
+
+        if (key == 'a')
+            angle += 5;
+        else if (key == 'd')
+            angle -= 5;
     }
 
     return 0;

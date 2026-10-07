@@ -44,14 +44,15 @@ auto to_vec4(const Eigen::Vector3f& v3, float w = 1.0f)
 /// Implement this function to check if the point (x, y) is inside the triangle represented by v[0], v[1], v[2]
 /// 判断点是否在三角形内
 /// </summary>
-static bool insideTriangle(float x, float y, const Vector3f* v)
+static bool insideTriangle(float x, float y, const Vector3f* v, float winding)
 {
     const int n = 3;
     // n 是顶点数量; i 表示当前顶点; j 表示上一个顶点
     // 灵魂代码是 j = i++
     for (int i = 0, j = n - 1; i < 3; j = i++) {
-        float edgeX = v[i].x() - v[j].x();
-        float edgeY = v[i].y() - v[j].y();
+        // 顺时针时反转边方向，统一为内部位于边左侧的逆时针约定。
+        float edgeX = winding * (v[i].x() - v[j].x());
+        float edgeY = winding * (v[i].y() - v[j].y());
         float pX = x - v[j].x();
         float pY = y - v[j].y();
         float crossResult = edgeX * pY - edgeY * pX;
@@ -156,6 +157,13 @@ void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf
 /// 屏幕空间光栅化
 /// </summary>
 void rst::rasterizer::rasterize_triangle(const Triangle& t) {
+    // Cull Off：接收两种绕序，仅跳过没有面积的退化三角形。
+    Eigen::Vector3f e1 = t.v[1] - t.v[0];
+    Eigen::Vector3f e2 = t.v[2] - t.v[0];
+    float area = e1.x() * e2.y() - e1.y() * e2.x();
+    if (area == 0.0f) return;
+    const float winding = area > 0.0f ? 1.0f : -1.0f;
+
     auto v = t.toVector4();
 
     int left = width, bottom = height;
@@ -181,12 +189,12 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
                 for (int i = 0; i < samplesPerAxis; ++i) {
                     float sampleX = x + (i + 0.5f) / samplesPerAxis;
                     float sampleY = y + (j + 0.5f) / samplesPerAxis;
-                    if (!insideTriangle(sampleX, sampleY, t.v)) continue;
+                    if (!insideTriangle(sampleX, sampleY, t.v, winding)) continue;
 
                     // 质心采样：中心在三角形内就用中心，否则用第一个被覆盖的样本。
                     // 着色位置只依赖几何覆盖，在深度测试前确定。
                     if (!shadingPositionChosen) {
-                        if (!insideTriangle(shadeX, shadeY, t.v)) {
+                        if (!insideTriangle(shadeX, shadeY, t.v, winding)) {
                             shadeX = sampleX;
                             shadeY = sampleY;
                         }
