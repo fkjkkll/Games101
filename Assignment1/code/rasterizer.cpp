@@ -141,8 +141,9 @@ void rst::rasterizer::draw(rst::pos_buf_id pos_buffer, rst::ind_buf_id ind_buffe
     auto& buf = pos_buf[pos_buffer.pos_id];
     auto& ind = ind_buf[ind_buffer.ind_id];
 
-    float f1 = (100 - 0.1) / 2.0;
-    float f2 = (100 + 0.1) / 2.0;
+    // 从 NDC [-1, 1] 映射到 [0.1, 100]
+    float f1 = (100 - 0.1) / 2.0; // 缩放系数
+    float f2 = (100 + 0.1) / 2.0; // 平移量
 
     Eigen::Matrix4f mvp = projection * view * model;
     for (auto& i : ind)
@@ -155,21 +156,21 @@ void rst::rasterizer::draw(rst::pos_buf_id pos_buffer, rst::ind_buf_id ind_buffe
                 mvp * to_vec4(buf[i[2]], 1.0f)
         };
 
+        // Homogeneous division
         for (auto& vec : v) {
             vec /= vec.w();
         }
 
+        // Viewport transformation
         for (auto & vert : v)
         {
-            vert.x() = 0.5*width*(vert.x()+1.0);
-            vert.y() = 0.5*height*(vert.y()+1.0);
+            vert.x() = 0.5 * width * (vert.x() + 1.0);
+            vert.y() = 0.5 * height * (vert.y() + 1.0);
             vert.z() = vert.z() * f1 + f2;
         }
 
         for (int i = 0; i < 3; ++i)
         {
-            t.setVertex(i, v[i].head<3>());
-            t.setVertex(i, v[i].head<3>());
             t.setVertex(i, v[i].head<3>());
         }
 
