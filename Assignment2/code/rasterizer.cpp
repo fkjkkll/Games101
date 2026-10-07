@@ -87,6 +87,16 @@ static std::tuple<float, float, float> computeBarycentric2D(float x, float y, co
     return { alpha, beta, gamma };
 }
 
+// 在选定的着色位置，使用原始裁剪空间 W 对顶点颜色进行透视校正插值。
+static Eigen::Vector3f interpolateColor(float x, float y, const Triangle& t)
+{
+    auto [alpha, beta, gamma] = computeBarycentric2D(x, y, t.v);
+    float a = alpha / t.clip_w[0];
+    float b = beta / t.clip_w[1];
+    float c = gamma / t.clip_w[2];
+    return (a * t.getColor(0) + b * t.getColor(1) + c * t.getColor(2)) / (a + b + c);
+}
+
 void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf_id col_buffer, Primitive type)
 {
     auto& buf = pos_buf[pos_buffer.pos_id];
@@ -157,35 +167,52 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
         top = MIN(MAX(top, ceil(p.y())), height);
     }
 
-    left *= msaaScalar;
-    right *= msaaScalar;
-    top *= msaaScalar;
-    bottom *= msaaScalar;
-    
+    // 包围盒保持像素坐标，每个像素内部检查 2×2 个样本。
+    const int samplesPerAxis = msaaEnable ? 2 : 1;
     for (int y = bottom; y < top; ++y) {
         for (int x = left; x < right; ++x) {
-            float sampleX = (x + 0.5) / msaaScalar;
-            float sampleY = (y + 0.5) / msaaScalar;
-            if (!insideTriangle(sampleX, sampleY, t.v)) continue;
-            // 先求出屏幕空间插值
-            auto [alpha, beta, gamma] = computeBarycentric2D(sampleX, sampleY, t.v);
-            // 对经过透视除法和视口映射的深度进行屏幕空间线性插值
-            float z_interpolated = alpha * v[0].z() + beta * v[1].z() + gamma * v[2].z();
-            // 深度测试
-            int index = get_index(x, y);
-            if (depth_buf[index] > z_interpolated) continue;
-            depth_buf[index] = z_interpolated;
-            // 颜色插值（透视校准）
-            float w_reciprocal = 1.0 / (alpha / t.clip_w[0] + beta / t.clip_w[1] + gamma / t.clip_w[2]);
-            Eigen::Vector3f color_interpolated = alpha / t.clip_w[0] * t.getColor(0)
-                + beta / t.clip_w[1] * t.getColor(1)
-                + gamma / t.clip_w[2] * t.getColor(2);
-            color_interpolated *= w_reciprocal;
-            // 绘制
-            if (msaaEnable)
-                set_sample_pixel(Eigen::Vector3f(x, y, 0), color_interpolated);
-            else
-                set_pixel(Eigen::Vector3f(x, y, 0), color_interpolated);
+            float shadeX = x + 0.5f;
+            float shadeY = y + 0.5f;
+            bool shadingPositionChosen = false;
+            bool shaded = false;
+            Eigen::Vector3f pixelColor = Eigen::Vector3f::Zero();
+
+            for (int j = 0; j < samplesPerAxis; ++j) {
+                for (int i = 0; i < samplesPerAxis; ++i) {
+                    float sampleX = x + (i + 0.5f) / samplesPerAxis;
+                    float sampleY = y + (j + 0.5f) / samplesPerAxis;
+                    if (!insideTriangle(sampleX, sampleY, t.v)) continue;
+
+                    // 质心采样：中心在三角形内就用中心，否则用第一个被覆盖的样本。
+                    // 着色位置只依赖几何覆盖，在深度测试前确定。
+                    if (!shadingPositionChosen) {
+                        if (!insideTriangle(shadeX, shadeY, t.v)) {
+                            shadeX = sampleX;
+                            shadeY = sampleY;
+                        }
+                        shadingPositionChosen = true;
+                    }
+
+                    // 深度仍在各个样本的位置独立插值和测试。
+                    auto [alpha, beta, gamma] = computeBarycentric2D(sampleX, sampleY, t.v);
+                    float depth = alpha * v[0].z() + beta * v[1].z() + gamma * v[2].z();
+                    int sx = x * samplesPerAxis + i;
+                    int sy = y * samplesPerAxis + j;
+                    int index = get_index(sx, sy);
+                    if (depth_buf[index] > depth) continue;
+
+                    // 同一个三角形在同一个像素中最多着色一次，颜色由通过测试的样本共享。
+                    if (!shaded) {
+                        pixelColor = interpolateColor(shadeX, shadeY, t);
+                        shaded = true;
+                    }
+                    depth_buf[index] = depth;
+                    if (msaaEnable)
+                        set_sample_pixel(Eigen::Vector3f(sx, sy, 0), pixelColor);
+                    else
+                        set_pixel(Eigen::Vector3f(x, y, 0), pixelColor);
+                }
+            }
         }
     }
 
