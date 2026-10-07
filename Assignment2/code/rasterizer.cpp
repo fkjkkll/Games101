@@ -55,7 +55,10 @@ static bool insideTriangle(float x, float y, const Vector3f* v)
         float pX = x - v[j].x();
         float pY = y - v[j].y();
         float crossResult = edgeX * pY - edgeY * pX;
-        if (crossResult < 0) return false;
+        // Y 向上、顶点逆时针：向下的边是左边，水平向左的边是上边。
+        // 左上规则让共享边上的采样点只属于一个三角形。
+        bool isTopLeft = edgeY < 0 || (edgeY == 0 && edgeX < 0);
+        if (crossResult < 0 || (crossResult == 0 && !isTopLeft)) return false;
     }
 
     /* 简短形式
@@ -132,6 +135,9 @@ void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf
 
         rasterize_triangle(t);
     }
+
+    if (msaaEnable)
+        resolve();
 }
 
 /// <summary>
@@ -149,11 +155,16 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
         right = MIN(MAX(right, ceil(p.x())), width);
         top = MIN(MAX(top, ceil(p.y())), height);
     }
+
+    left *= msaaScalar;
+    right *= msaaScalar;
+    top *= msaaScalar;
+    bottom *= msaaScalar;
     
     for (int y = bottom; y < top; ++y) {
         for (int x = left; x < right; ++x) {
-            float sampleX = x + 0.5;
-            float sampleY = y + 0.5;
+            float sampleX = (x + 0.5) / msaaScalar;
+            float sampleY = (y + 0.5) / msaaScalar;
             if (!insideTriangle(sampleX, sampleY, t.v)) continue;
             // 先求出屏幕空间插值
             auto [alpha, beta, gamma] = computeBarycentric2D(sampleX, sampleY, t.v);
@@ -164,7 +175,10 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
             if (depth_buf[index] > z_interpolated) continue;
             depth_buf[index] = z_interpolated;
             // 绘制
-            set_pixel(Eigen::Vector3f(x, y, 0), t.getColor(0));
+            if (msaaEnable)
+                set_sample_pixel(Eigen::Vector3f(x, y, 0), t.getColor(0));
+            else
+                set_pixel(Eigen::Vector3f(x, y, 0), t.getColor(0));
         }
     }
 
@@ -178,6 +192,23 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
     //z_interpolated *= w_reciprocal;
 
     // TODO : set the current pixel (use the set_pixel function) to the color of the triangle (use getColor function) if it should be painted.
+}
+
+void rst::rasterizer::resolve()
+{
+    for (int y = 0; y < logicHeight; y += 2) {
+        for (int x = 0; x < logicWidth; x += 2) {
+            int index0 = get_index(x, y);
+            int index1 = index0 + 1;
+            int index2 = get_index(x, y + 1);
+            int index3 = index2 + 1;
+            auto targetColor = sample_color[index0] 
+                + sample_color[index1]
+                + sample_color[index2]
+                + sample_color[index3];
+            set_pixel(Eigen::Vector3f(x >> 1, y >> 1, 0), targetColor / 4);
+        }
+    }
 }
 
 void rst::rasterizer::set_model(const Eigen::Matrix4f& m)
@@ -200,6 +231,7 @@ void rst::rasterizer::clear(rst::Buffers buff)
     if ((buff & rst::Buffers::Color) == rst::Buffers::Color)
     {
         std::fill(frame_buf.begin(), frame_buf.end(), Eigen::Vector3f{ 0, 0, 0 });
+        std::fill(sample_color.begin(), sample_color.end(), Eigen::Vector3f{ 0, 0, 0 });
     }
     if ((buff & rst::Buffers::Depth) == rst::Buffers::Depth)
     {
@@ -207,15 +239,30 @@ void rst::rasterizer::clear(rst::Buffers buff)
     }
 }
 
-rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
+rst::rasterizer::rasterizer(int w, int h, bool msaaEnable) : width(w), height(h)
 {
-    frame_buf.resize(w * h);
-    depth_buf.resize(w * h);
+    int baseSize = w * h;
+    frame_buf.resize(baseSize);
+    this->msaaEnable = msaaEnable;
+    if (msaaEnable)
+    {
+        msaaScalar = 2;
+        depth_buf.resize(baseSize * 4);
+        sample_color.resize(baseSize * 4);
+    }
+    else
+    {
+        msaaScalar = 1;
+        depth_buf.resize(baseSize);
+        sample_color.reserve(0);
+    }
+    logicWidth = width * msaaScalar;
+    logicHeight = height * msaaScalar;
 }
 
 int rst::rasterizer::get_index(int x, int y)
 {
-    return (height - 1 - y) * width + x;
+    return (logicHeight - 1 - y) * logicWidth + x;
 }
 
 /// <summary>
@@ -228,6 +275,12 @@ void rst::rasterizer::set_pixel(const Eigen::Vector3f& point, const Eigen::Vecto
 {
     auto ind = (height - 1 - point.y()) * width + point.x();
     frame_buf[ind] = color;
+}
+
+void rst::rasterizer::set_sample_pixel(const Eigen::Vector3f& point, const Eigen::Vector3f& color)
+{
+    auto ind = (logicHeight - 1 - point.y()) * logicWidth + point.x();
+    sample_color[ind] = color;
 }
 
 // clang-format on

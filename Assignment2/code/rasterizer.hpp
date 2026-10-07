@@ -57,7 +57,7 @@ namespace rst
     class rasterizer
     {
     public:
-        rasterizer(int w, int h);
+        rasterizer(int w, int h, bool msaaEnable);
         pos_buf_id load_positions(const std::vector<Eigen::Vector3f>& positions);
         ind_buf_id load_indices(const std::vector<Eigen::Vector3i>& indices);
         col_buf_id load_colors(const std::vector<Eigen::Vector3f>& colors);
@@ -67,6 +67,8 @@ namespace rst
         void set_projection(const Eigen::Matrix4f& p);
 
         void set_pixel(const Eigen::Vector3f& point, const Eigen::Vector3f& color);
+        void set_sample_pixel(const Eigen::Vector3f& point, const Eigen::Vector3f& color);
+        void resolve();
 
         void clear(Buffers buff);
 
@@ -75,8 +77,6 @@ namespace rst
         std::vector<Eigen::Vector3f>& frame_buffer() { return frame_buf; }
 
     private:
-        void draw_line(Eigen::Vector3f begin, Eigen::Vector3f end);
-
         void rasterize_triangle(const Triangle& t);
 
         // VERTEX SHADER -> MVP -> Clipping -> /.W -> VIEWPORT -> DRAWLINE/DRAWTRI -> FRAGSHADER
@@ -92,10 +92,14 @@ namespace rst
 
         std::vector<Eigen::Vector3f> frame_buf;
         std::vector<float> depth_buf;
+        std::vector<Eigen::Vector3f> sample_color; // msaa buffer
 
         int get_index(int x, int y);
 
         int width, height;
+        int logicWidth, logicHeight;
+        bool msaaEnable;
+        float msaaScalar;
 
         int next_id = 0;
         int get_next_id() { return next_id++; }
