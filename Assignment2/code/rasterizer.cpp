@@ -108,8 +108,9 @@ void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf
         };
 
         // Homogeneous division
-        for (auto& vec : v) {
-            vec /= vec.w();
+        for (int k = 0; k < 3; ++k) {
+            t.clip_w[k] = v[k].w();
+            v[k] /= t.clip_w[k];
         }
 
         // Viewport transformation
@@ -174,11 +175,17 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
             int index = get_index(x, y);
             if (depth_buf[index] > z_interpolated) continue;
             depth_buf[index] = z_interpolated;
+            // 颜色插值（透视校准）
+            float w_reciprocal = 1.0 / (alpha / t.clip_w[0] + beta / t.clip_w[1] + gamma / t.clip_w[2]);
+            Eigen::Vector3f color_interpolated = alpha / t.clip_w[0] * t.getColor(0)
+                + beta / t.clip_w[1] * t.getColor(1)
+                + gamma / t.clip_w[2] * t.getColor(2);
+            color_interpolated *= w_reciprocal;
             // 绘制
             if (msaaEnable)
-                set_sample_pixel(Eigen::Vector3f(x, y, 0), t.getColor(0));
+                set_sample_pixel(Eigen::Vector3f(x, y, 0), color_interpolated);
             else
-                set_pixel(Eigen::Vector3f(x, y, 0), t.getColor(0));
+                set_pixel(Eigen::Vector3f(x, y, 0), color_interpolated);
         }
     }
 
