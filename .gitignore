@@ -34,11 +34,21 @@ CMakeUserPresets.json
 *.userosscache
 *.sln.docstates
 
-# Output images (rasterizer generates these)
+# Rendered images (model assets are kept below)
 *.png
 *.jpg
 *.bmp
 *.tga
+*.ppm
+
+# Input assets: .obj here means a Wavefront model, not a compiled object file.
+# Build directories remain ignored, including any assets copied into them.
+!**/models/**/*.obj
+!**/models/**/*.png
+!**/models/**/*.jpg
+!**/models/**/*.bmp
+!**/models/**/*.tga
+!**/models/**/*.ppm
 
 # macOS
 .DS_Store
