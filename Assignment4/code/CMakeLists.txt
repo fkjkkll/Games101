@@ -6,5 +6,8 @@ find_package(OpenCV REQUIRED)
 set(CMAKE_CXX_STANDARD 14)
 
 add_executable(BezierCurve main.cpp)
+if(MSVC)
+    target_compile_options(BezierCurve PRIVATE /utf-8)
+endif()
 
 target_link_libraries(BezierCurve ${OpenCV_LIBRARIES})

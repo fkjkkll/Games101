@@ -97,7 +97,6 @@ void rst::rasterizer::draw_line(Eigen::Vector3f begin, Eigen::Vector3f end)
                 }
                 px=px+2*(dy1-dx1);
             }
-//            delay(0);
             Eigen::Vector2i point = Eigen::Vector2i(x, y);
             set_pixel(point,line_color);
         }
@@ -137,7 +136,6 @@ void rst::rasterizer::draw_line(Eigen::Vector3f begin, Eigen::Vector3f end)
                 }
                 py=py+2*(dx1-dy1);
             }
-//            delay(0);
             Eigen::Vector2i point = Eigen::Vector2i(x, y);
             set_pixel(point,line_color);
         }
@@ -149,29 +147,59 @@ auto to_vec4(const Eigen::Vector3f& v3, float w = 1.0f)
     return Vector4f(v3.x(), v3.y(), v3.z(), w);
 }
 
-static bool insideTriangle(int x, int y, const Vector4f* _v){
+static bool insideTriangle(float x, float y, const Vector4f* _v){
     Vector3f v[3];
     for(int i=0;i<3;i++)
         v[i] = {_v[i].x(),_v[i].y(), 1.0};
+    // 两个点叉积，得到边的直线方程系数
     Vector3f f0,f1,f2;
     f0 = v[1].cross(v[0]);
     f1 = v[2].cross(v[1]);
     f2 = v[0].cross(v[2]);
     Vector3f p(x,y,1.);
+    // 点积就是把点代入直线方程：判断目标点和三角形另一顶点是否在边的同一侧
     if((p.dot(f0)*f0.dot(v[2])>0) && (p.dot(f1)*f1.dot(v[0])>0) && (p.dot(f2)*f2.dot(v[1])>0))
         return true;
     return false;
 }
 
+/// <summary>
+/// 重心坐标
+/// </summary>
+static std::tuple<float, float, float> computeBarycentric2D(float x, float y, const Vector4f* v)
+{
+    float doubleArea = (v[1].x() - v[0].x()) * (v[2].y() - v[0].y()) - (v[1].y() - v[0].y()) * (v[2].x() - v[0].x());
+    float doubleAreaA = (v[1].x() - x) * (v[2].y() - y) - (v[1].y() - y) * (v[2].x() - x);
+    float doubleAreaB = (v[2].x() - x) * (v[0].y() - y) - (v[2].y() - y) * (v[0].x() - x);
+    float alpha = doubleAreaA / doubleArea;
+    float beta = doubleAreaB / doubleArea;
+    float gamma = 1 - alpha - beta;
+    return { alpha, beta, gamma };
+}
+
+/*
+* 作业模板里的实现：容易引入误差，且有重复计算
+* 类似这样的代码，有如下问题：v[1].x() * v[2].y() - v[2].x() * v[1].y()
+* 屏幕坐标有几百，乘积就可能有几十万。但三角形很小时，最后求出的面积却很小。两个很接近的大数相减，容易损失有效数字，这叫消减误差（cancellation）。
 static std::tuple<float, float, float> computeBarycentric2D(float x, float y, const Vector4f* v){
-    float c1 = (x*(v[1].y() - v[2].y()) + (v[2].x() - v[1].x())*y + v[1].x()*v[2].y() - v[2].x()*v[1].y()) / (v[0].x()*(v[1].y() - v[2].y()) + (v[2].x() - v[1].x())*v[0].y() + v[1].x()*v[2].y() - v[2].x()*v[1].y());
-    float c2 = (x*(v[2].y() - v[0].y()) + (v[0].x() - v[2].x())*y + v[2].x()*v[0].y() - v[0].x()*v[2].y()) / (v[1].x()*(v[2].y() - v[0].y()) + (v[0].x() - v[2].x())*v[1].y() + v[2].x()*v[0].y() - v[0].x()*v[2].y());
-    float c3 = (x*(v[0].y() - v[1].y()) + (v[1].x() - v[0].x())*y + v[0].x()*v[1].y() - v[1].x()*v[0].y()) / (v[2].x()*(v[0].y() - v[1].y()) + (v[1].x() - v[0].x())*v[2].y() + v[0].x()*v[1].y() - v[1].x()*v[0].y());
+    float c1 = (x*(v[1].y() - v[2].y()) + (v[2].x() - v[1].x())*y + v[1].x()*v[2].y() - v[2].x()*v[1].y())
+        / (v[0].x()*(v[1].y() - v[2].y()) + (v[2].x() - v[1].x())*v[0].y() + v[1].x()*v[2].y() - v[2].x()*v[1].y());
+    float c2 = (x*(v[2].y() - v[0].y()) + (v[0].x() - v[2].x())*y + v[2].x()*v[0].y() - v[0].x()*v[2].y())
+        / (v[1].x()*(v[2].y() - v[0].y()) + (v[0].x() - v[2].x())*v[1].y() + v[2].x()*v[0].y() - v[0].x()*v[2].y());
+    float c3 = (x*(v[0].y() - v[1].y()) + (v[1].x() - v[0].x())*y + v[0].x()*v[1].y() - v[1].x()*v[0].y())
+        / (v[2].x()*(v[0].y() - v[1].y()) + (v[1].x() - v[0].x())*v[2].y() + v[0].x()*v[1].y() - v[1].x()*v[0].y());
     return {c1,c2,c3};
 }
+*/
 
 void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList) {
 
+    // 从 NDC [-1, 1] 映射到 [0.1, 50] >> 近平面 1 映射到 50 while 远平面 -1 映射到 0.1
+    // 浮点数在接近 0 时，能区分的数值间隔更小；把远处密集的深度放到接近 0 的位置，确实可能提高精度。 这也是反向深度（Reversed-Z）的核心思路
+    // 反向深度的好处来自：把密集的部分搬到浮点数刻度更细的位置
+    // 浮点表示方面： 远处密集的深度落到接近 0、浮点刻度更细的位置，更容易区分。
+    // 插值运算方面： 使用这些较小的深度值计算，重心坐标误差带来的深度偏差也可能明显减小。
+    // https://developer.nvidia.com/blog/visualizing-depth-precision/
     float f1 = (50 - 0.1) / 2.0;
     float f2 = (50 + 0.1) / 2.0;
 
@@ -197,13 +225,19 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList) {
                 mvp * t->v[1],
                 mvp * t->v[2]
         };
-        //Homogeneous division
+
+        // Homogeneous division
+        // 与作业2不同，这里没有直接整个向量除以w，这样可以保留w，并且下面setVertex设置的也是4维的齐次坐标
         for (auto& vec : v) {
             vec.x()/=vec.w();
             vec.y()/=vec.w();
             vec.z()/=vec.w();
         }
 
+        /*
+        * 仿射变换保持直线和平行关系，但不保证保持角度
+        * 所以如果我们要在观测空间计算光照，需要得到在观测空间真正垂直表面的法向量
+        */
         Eigen::Matrix4f inv_trans = (view * model).inverse().transpose();
         Eigen::Vector4f n[] = {
                 inv_trans * to_vec4(t->normal[0], 0.0f),
@@ -240,12 +274,22 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList) {
     }
 }
 
-static Eigen::Vector3f interpolate(float alpha, float beta, float gamma, const Eigen::Vector3f& vert1, const Eigen::Vector3f& vert2, const Eigen::Vector3f& vert3, float weight)
+static Eigen::Vector3f interpolate(
+    float alpha, float beta, float gamma,
+    const Eigen::Vector3f& vert1,
+    const Eigen::Vector3f& vert2,
+    const Eigen::Vector3f& vert3,
+    float weight)
 {
     return (alpha * vert1 + beta * vert2 + gamma * vert3) / weight;
 }
 
-static Eigen::Vector2f interpolate(float alpha, float beta, float gamma, const Eigen::Vector2f& vert1, const Eigen::Vector2f& vert2, const Eigen::Vector2f& vert3, float weight)
+static Eigen::Vector2f interpolate(
+    float alpha, float beta, float gamma,
+    const Eigen::Vector2f& vert1,
+    const Eigen::Vector2f& vert2,
+    const Eigen::Vector2f& vert3,
+    float weight)
 {
     auto u = (alpha * vert1[0] + beta * vert2[0] + gamma * vert3[0]);
     auto v = (alpha * vert1[1] + beta * vert2[1] + gamma * vert3[1]);
@@ -259,6 +303,55 @@ static Eigen::Vector2f interpolate(float alpha, float beta, float gamma, const E
 //Screen space rasterization
 void rst::rasterizer::rasterize_triangle(const Triangle& t, const std::array<Eigen::Vector3f, 3>& view_pos) 
 {
+    int left = width, right = 0, top = 0, bottom = height;
+    for (const auto& p : t.v) {
+        left = MAX(MIN(floor(p.x()), left), 0);
+        right = MIN(MAX(ceil(p.x()), right), width);
+        bottom = MAX(MIN(floor(p.y()), bottom), 0);
+        top = MIN(MAX(ceil(p.y()), top), height);
+    }
+
+    for (int y = bottom; y < top; ++y) {
+        for (int x = left; x < right; ++x) {
+            float sampleX = x + 0.5, sampleY = y + 0.5;
+            if (!insideTriangle(sampleX, sampleY, t.v))
+                continue;
+
+            auto [alpha, beta, gamma] = computeBarycentric2D(sampleX, sampleY, t.v);
+
+            // 透视除法后的深度插值（仅用于深度测试是OK的）
+            float depth = alpha * t.a().z() + beta * t.b().z() + gamma * t.c().z();
+            int index = get_index(x, y);
+            if (depth_buf[index] > depth)
+                continue;
+            depth_buf[index] = depth;
+
+            float w1 = t.a().w(), w2 = t.b().w(), w3 = t.c().w();
+            float w = 1 / (alpha / w1 + beta / w2 + gamma / w3);
+
+            // 位置插值
+            Vector3f position = view_pos[0] * alpha / w1 + view_pos[1] * beta / w2 + view_pos[2] * gamma / w3;
+            position *= w;
+            // 法向量插值
+            Vector3f normal = t.normal[0] * alpha / w1 + t.normal[1] * beta / w2 + t.normal[2] * gamma / w3;
+            normal *= w;
+            normal.normalize();
+            // 颜色插值
+            Vector3f color = t.color[0] * alpha / w1 + t.color[1] * beta / w2 + t.color[2] * gamma / w3;
+            color *= w;
+            // 纹理插值
+            Vector2f tex = t.tex_coords[0] * alpha / w1 + t.tex_coords[1] * beta / w2 + t.tex_coords[2] * gamma / w3;
+            tex *= w;
+
+            fragment_shader_payload fragment(color, normal, tex, t.tex);
+            fragment.view_pos = position;
+            color = fragment_shader(fragment);
+
+            set_pixel(Eigen::Vector2i{ x, y }, color);
+        }
+    }
+
+
     // TODO: From your HW3, get the triangle rasterization code.
     // TODO: Inside your rasterization loop:
     //    * v[i].w() is the vertex view space depth value z.
@@ -306,7 +399,7 @@ void rst::rasterizer::clear(rst::Buffers buff)
     }
     if ((buff & rst::Buffers::Depth) == rst::Buffers::Depth)
     {
-        std::fill(depth_buf.begin(), depth_buf.end(), std::numeric_limits<float>::infinity());
+        std::fill(depth_buf.begin(), depth_buf.end(), -std::numeric_limits<float>::infinity());
     }
 }
 

@@ -31,6 +31,9 @@ link_directories(
 # Add executable
 #-------------------------------------------------------------------------------
 add_executable(ropesim ${APPLICATION_SOURCE})
+if(MSVC)
+  set_property(TARGET ropesim APPEND_STRING PROPERTY COMPILE_FLAGS " /utf-8")
+endif()
 
 target_link_libraries( ropesim
     CGL ${CGL_LIBRARIES}

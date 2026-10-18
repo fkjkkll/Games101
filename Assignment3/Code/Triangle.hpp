@@ -32,7 +32,6 @@ public:
     void setNormals(const std::array<Vector3f, 3>& normals);
     void setColors(const std::array<Vector3f, 3>& colors);
     void setTexCoord(int ind,Vector2f uv ); /*set i-th vertex texture coordinate*/
-    std::array<Vector4f, 3> toVector4() const;
 };
 
 

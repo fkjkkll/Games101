@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <opencv2/opencv.hpp>
 
 #include "global.hpp"
@@ -49,8 +49,42 @@ Eigen::Matrix4f get_model_matrix(float angle)
 
 Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio, float zNear, float zFar)
 {
-    // TODO: Use the same projection matrix from the previous assignments
+    float t = tan(eye_fov / 2 / 180 * MY_PI) * abs(zNear);
+    float b = -t;
+    float r = t * aspect_ratio;
+    float l = -r;
 
+    // 课件里近平面和远平面都应该是负数
+    float n = -abs(zNear);
+    float f = -abs(zFar);
+
+    // 透视到正交
+    Eigen::Matrix4f perspToOrtho;
+    perspToOrtho <<
+        n, 0, 0, 0,
+        0, n, 0, 0,
+        0, 0, n + f, -n * f,
+        0, 0, 1, 0;
+
+    // 平移到原点
+    Eigen::Matrix4f translate;
+    translate <<
+        1, 0, 0, -(l + r) / 2,
+        0, 1, 0, -(t + b) / 2,
+        0, 0, 1, -(n + f) / 2,
+        0, 0, 0, 1;
+
+    // 缩放到[-1, 1]
+    Eigen::Matrix4f scale;
+    scale <<
+        2 / (r - l), 0, 0, 0,
+        0, 2 / (t - b), 0, 0,
+        0, 0, 2 / (n - f), 0,
+        0, 0, 0, 1;
+
+    Eigen::Matrix4f projection = Eigen::Matrix4f::Identity();
+    projection = scale * translate * perspToOrtho * projection;
+    return projection;
 }
 
 Eigen::Vector3f vertex_shader(const vertex_shader_payload& payload)
@@ -60,7 +94,7 @@ Eigen::Vector3f vertex_shader(const vertex_shader_payload& payload)
 
 Eigen::Vector3f normal_fragment_shader(const fragment_shader_payload& payload)
 {
-    Eigen::Vector3f return_color = (payload.normal.head<3>().normalized() + Eigen::Vector3f(1.0f, 1.0f, 1.0f)) / 2.f;
+    Eigen::Vector3f return_color = (payload.normal.head<3>() + Eigen::Vector3f(1.0f, 1.0f, 1.0f)) / 2.f;
     Eigen::Vector3f result;
     result << return_color.x() * 255, return_color.y() * 255, return_color.z() * 255;
     return result;
@@ -138,11 +172,32 @@ Eigen::Vector3f phong_fragment_shader(const fragment_shader_payload& payload)
     Eigen::Vector3f normal = payload.normal;
 
     Eigen::Vector3f result_color = {0, 0, 0};
+
+    Vector3f viewVector = (eye_pos - point).normalized();
     for (auto& light : lights)
     {
+        auto lightVector = light.position - point;
+        auto lightUnitVector = lightVector.normalized();
+        auto distSqr = lightVector.squaredNorm();
+
+        // 漫反射
+        auto reflect = MAX(normal.dot(lightUnitVector), 0);
+        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
+
+        // 高光项
+        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
+        auto mirror = MAX(normal.dot(halfUnitVector), 0);
+        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
+
+        // 环境光
+        auto ambient = ka.cwiseProduct(amb_light_intensity);
+
+        result_color += diffuse;
+        result_color += specular;
+        result_color += ambient;
+
         // TODO: For each light source in the code, calculate what the *ambient*, *diffuse*, and *specular* 
         // components are. Then, accumulate that result on the *result_color* object.
-        
     }
 
     return result_color * 255.f;
@@ -242,15 +297,20 @@ int main(int argc, const char** argv)
 {
     std::vector<Triangle*> TriangleList;
 
-    float angle = 140.0;
+    float angle = 180.0;
     bool command_line = false;
 
     std::string filename = "output.png";
     objl::Loader Loader;
-    std::string obj_path = "../models/spot/";
+    std::string obj_path = std::string(RASTERIZER_MODEL_DIR) + "/spot/";
 
     // Load .obj File
-    bool loadout = Loader.LoadFile("../models/spot/spot_triangulated_good.obj");
+    bool loadout = Loader.LoadFile(obj_path + "spot_triangulated_good.obj");
+    if (!loadout)
+    {
+        std::cerr << "Failed to load OBJ: " << obj_path << "spot_triangulated_good.obj\n";
+        return 1;
+    }
     for(auto mesh:Loader.LoadedMeshes)
     {
         for(int i=0;i<mesh.Vertices.size();i+=3)
@@ -340,7 +400,6 @@ int main(int argc, const char** argv)
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrix(45.0, 1, 0.1, 50));
 
-        //r.draw(pos_id, ind_id, col_id, rst::Primitive::Triangle);
         r.draw(TriangleList);
         cv::Mat image(700, 700, CV_32FC3, r.frame_buffer().data());
         image.convertTo(image, CV_8UC3, 1.0f);
@@ -352,12 +411,14 @@ int main(int argc, const char** argv)
 
         if (key == 'a' )
         {
-            angle -= 0.1;
+            angle -= 10;
         }
         else if (key == 'd')
         {
-            angle += 0.1;
+            angle += 10;
         }
+
+        angle -= 10;
 
     }
     return 0;

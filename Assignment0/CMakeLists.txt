@@ -9,3 +9,6 @@ get_target_property(_EIGEN3_INC Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
 include_directories(${_EIGEN3_INC}/..)
 
 add_executable(Transformation main.cpp)
+if(MSVC)
+    target_compile_options(Transformation PRIVATE /utf-8)
+endif()

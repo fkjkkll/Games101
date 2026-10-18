@@ -7,6 +7,7 @@
 #include "global.hpp"
 #include <eigen3/Eigen/Eigen>
 #include <opencv2/opencv.hpp>
+#include <stdexcept>
 class Texture{
 private:
     cv::Mat image_data;
@@ -15,6 +16,10 @@ public:
     Texture(const std::string& name)
     {
         image_data = cv::imread(name);
+        if (image_data.empty())
+        {
+            throw std::runtime_error("Failed to load texture: " + name);
+        }
         cv::cvtColor(image_data, image_data, cv::COLOR_RGB2BGR);
         width = image_data.cols;
         height = image_data.rows;
