@@ -65,7 +65,7 @@ static bool insideTriangle(float x, float y, const Vector3f* v, float winding)
     /* 简短形式
     for (int i = 0, j = n - 1; i < 3; j = i++) {
         Eigen::Vector2f edge(v[i].x() - v[j].x(), v[i].y() - v[j].y());
-        Eigen::Vector2f ray(x - _v[j].x(), y - _v[j].y());
+        Eigen::Vector2f ray(x - v[j].x(), y - v[j].y());
         auto res = edge.cross(ray);
         if (res < 0) return false;
     }

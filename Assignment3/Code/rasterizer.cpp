@@ -147,6 +147,22 @@ auto to_vec4(const Eigen::Vector3f& v3, float w = 1.0f)
     return Vector4f(v3.x(), v3.y(), v3.z(), w);
 }
 
+/// <summary>
+/// 更加合理的判断
+/// </summary>
+static bool insideTriangle(float x, float y, const Vector4f* v) {
+    const int n = 3;
+    for (int i = 0, j = n - 1; i < 3; j = i++) {
+        Eigen::Vector2f edge(v[i].x() - v[j].x(), v[i].y() - v[j].y());
+        Eigen::Vector2f ray(x - v[j].x(), y - v[j].y());
+        auto res = edge.cross(ray);
+        if (res < 0) return false;
+    }
+    return true;
+}
+
+/*
+* 作业模板里的实现：容易引入误差
 static bool insideTriangle(float x, float y, const Vector4f* _v){
     Vector3f v[3];
     for(int i=0;i<3;i++)
@@ -162,6 +178,7 @@ static bool insideTriangle(float x, float y, const Vector4f* _v){
         return true;
     return false;
 }
+*/
 
 /// <summary>
 /// 重心坐标
@@ -207,6 +224,8 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList) {
     for (const auto& t:TriangleList)
     {
         Triangle newtri = *t;
+        if (texture.has_value())
+            newtri.tex = &texture.value();
 
         std::array<Eigen::Vector4f, 3> mm {
                 (view * model * t->v[0]),
