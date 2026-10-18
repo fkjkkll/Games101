@@ -1,7 +1,7 @@
 # Status
 - hw0  ✅
 - hw1  ✅
-- hm2  ✅
+- hw2  ✅
 - hw3  ⛅
 - hw4  ☁️
 - hw5  ☁️
