@@ -364,6 +364,7 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t, const std::array<Eig
 
             fragment_shader_payload fragment(color, normal, tex, t.tex);
             fragment.view_pos = position;
+            fragment.bilinear = bilinear;
             color = fragment_shader(fragment);
 
             set_pixel(Eigen::Vector2i{ x, y }, color);

@@ -1,4 +1,8 @@
 #include <iostream>
+#include <cmath>
+#include <algorithm>
+#include <functional>
+#include <vector>
 #include <opencv2/opencv.hpp>
 
 #include "global.hpp"
@@ -94,17 +98,12 @@ Eigen::Vector3f vertex_shader(const vertex_shader_payload& payload)
 
 Eigen::Vector3f normal_fragment_shader(const fragment_shader_payload& payload)
 {
+    // 法线可视化：把 [-1,1] 的法线映射到 [0,1] 后当作颜色
     Eigen::Vector3f return_color = (payload.normal.head<3>() + Eigen::Vector3f(1.0f, 1.0f, 1.0f)) / 2.f;
-    Eigen::Vector3f result;
-    result << return_color.x() * 255, return_color.y() * 255, return_color.z() * 255;
-    return result;
+    return return_color * 255.f;
 }
 
-static Eigen::Vector3f reflect(const Eigen::Vector3f& vec, const Eigen::Vector3f& axis)
-{
-    auto costheta = vec.dot(axis);
-    return (2 * costheta * axis - vec).normalized();
-}
+// ======================== 场景 / 材质 / 光照 ========================
 
 struct light
 {
@@ -112,329 +111,202 @@ struct light
     Eigen::Vector3f intensity;
 };
 
-// Bonus：纹理采样方式的开关（由命令行参数切换，n/f 表示 nearest / bilinear）
-static bool g_use_bilinear = false;
+// 一个材质需要的四项参数
+// ka: 环境光反射系数; kd: 漫反射颜色; ks: 高光系数; p: 高光指数（越大高光越集中）
+struct material
+{
+    Eigen::Vector3f ka;
+    Eigen::Vector3f kd;
+    Eigen::Vector3f ks;
+    float p;
+};
+
+// 整个场景共享的参数：两盏点光源 + 环境光强度 + 相机位置
+// 相机固定在 view space 的 (0,0,10)，和 main 里的 eye_pos 保持一致
+struct scene
+{
+    std::vector<light> lights;
+    Eigen::Vector3f amb;
+    Eigen::Vector3f eye;
+};
+
+static const scene g_scene = {
+    {
+        light{ Eigen::Vector3f(20.f, 20.f, 20.f),   Eigen::Vector3f(500.f, 500.f, 500.f) },
+        light{ Eigen::Vector3f(-20.f, 20.f, 0.f),   Eigen::Vector3f(500.f, 500.f, 500.f) }
+    },
+    Eigen::Vector3f(10.f, 10.f, 10.f),
+    Eigen::Vector3f(0.f, 0.f, 10.f)
+};
+
+// ======================== 着色公共工具 ========================
+
+// 纹理采样，返回 0~255 的颜色（和 Texture::getColor 的约定一致，不在这里归一化）
+static Eigen::Vector3f sample_color(Texture* tex, const Eigen::Vector2f& uv, bool bilinear)
+{
+    if (tex == nullptr) return Eigen::Vector3f::Zero();
+    return bilinear ? tex->getColorBilinear(uv.x(), uv.y())
+                    : tex->getColor(uv.x(), uv.y());
+}
+
+// 把纹理颜色当成“高度”：取模长（灰度图三通道相同，等价于取通道值），归一到 [0,1]
+static float sample_height(Texture* tex, const Eigen::Vector2f& uv, bool bilinear)
+{
+    return sample_color(tex, uv, bilinear).norm() / 255.f;
+}
+
+// 由法线 n 构造 TBN
+// 思路：把世界坐标的“上”方向 ĵ=(0,1,0) 投影到切平面，残差归一化就是切线 t
+// 当 n 平行于 ĵ 时投影长度 1-y² 为 0，此时随便取一组正交基兜底
+static Eigen::Matrix3f build_tbn(const Eigen::Vector3f& n)
+{
+    const Eigen::Vector3f up(0.f, 1.f, 0.f);
+    const float proj = up.dot(n);            // = n.y()
+    const float len2 = 1.f - proj * proj;    // |ĵ - (ĵ·n)n|²
+
+    Eigen::Vector3f t;
+    if (len2 > 1e-8f)
+        t = (up - proj * n) / std::sqrt(len2);
+    else
+        t = Eigen::Vector3f(1.f, 0.f, 0.f);  // n 与 ĵ 平行，切平面任意
+
+    Eigen::Vector3f b = n.cross(t);
+    b.normalize();
+
+    Eigen::Matrix3f tbn;
+    tbn.col(0) = t;
+    tbn.col(1) = b;
+    tbn.col(2) = n;
+    return tbn;
+}
+
+// 高度扰动法线：在 uv 处做前向差分求高度梯度，得到切线空间法线 (-kh*du, -kh*dv, 1)
+// 再乘 TBN 变回 view space。bump 和 displacement 共用这一段。
+// strength = kh * kn：kh 控制“凹凸强度”，kn 是位移系数，这里作为小量一起乘在差分上
+static Eigen::Vector3f perturb_normal(const Eigen::Vector3f& n, Texture* tex,
+                                      const Eigen::Vector2f& uv, float strength)
+{
+    const Eigen::Matrix3f tbn = build_tbn(n);
+
+    // 一个 texel 对应的 uv 步长
+    const float du = tex ? 1.f / tex->width : 0.f;
+    const float dv = tex ? 1.f / tex->height : 0.f;
+
+    // 梯度用单通道 .x()，保持线性，避免三个通道做非线性组合
+    const float h0 = sample_color(tex, uv, false).x();
+    const float hu = sample_color(tex, Eigen::Vector2f(uv.x() + du, uv.y()), false).x();
+    const float hv = sample_color(tex, Eigen::Vector2f(uv.x(), uv.y() + dv), false).x();
+
+    const Eigen::Vector3f ln(-strength * (hu - h0), -strength * (hv - h0), 1.f);
+    return (tbn * ln).normalized();
+}
+
+// 标准 Blinn-Phong：环境光 + 每盏点光源的漫反射与高光，返回 0~255 的颜色
+static Eigen::Vector3f blinn_phong(const material& m, const Eigen::Vector3f& point,
+                                   const Eigen::Vector3f& normal)
+{
+    // 环境光：与光源数量无关，只在循环外加一次
+    Eigen::Vector3f color = m.ka.cwiseProduct(g_scene.amb);
+
+    // 视线方向：从 shading point 指向相机
+    Eigen::Vector3f view_dir = (g_scene.eye - point).normalized();
+
+    for (const auto& l : g_scene.lights)
+    {
+        // 光照方向：从 shading point 指向光源
+        Eigen::Vector3f light_dir = l.position - point;
+        const float r2 = light_dir.squaredNorm();     // 距离衰减
+        light_dir.normalize();
+
+        // 漫反射
+        Eigen::Vector3f diffuse = m.kd.cwiseProduct(l.intensity) * std::max(0.f, normal.dot(light_dir));
+
+        // 高光：半程向量 h = normalize(L + V)
+        Eigen::Vector3f half_dir = (view_dir + light_dir).normalized();
+        Eigen::Vector3f specular = m.ks.cwiseProduct(l.intensity)
+                                 * std::pow(std::max(0.f, normal.dot(half_dir)), m.p);
+
+        color += (diffuse + specular) / r2;
+    }
+
+    return color * 255.f;
+}
+
+// ======================== 各个 fragment shader ========================
+// 公共的照明都交给 blinn_phong，每个 shader 只写自己的差异部分
 
 Eigen::Vector3f texture_fragment_shader(const fragment_shader_payload& payload)
 {
-    Eigen::Vector3f return_color = {0, 0, 0};
-    if (payload.texture)
-    {
-        auto tex_coord = payload.tex_coords;
-        return_color = g_use_bilinear
-                           ? payload.texture->getColorBilinear(tex_coord.x(), tex_coord.y())
-                           : payload.texture->getColor(tex_coord.x(), tex_coord.y());
-    }
-    Eigen::Vector3f texture_color;
-    texture_color << return_color.x(), return_color.y(), return_color.z();
-
-    Eigen::Vector3f ka = Eigen::Vector3f(0.005, 0.005, 0.005);
-    Eigen::Vector3f kd = texture_color / 255.f;
-    Eigen::Vector3f ks = Eigen::Vector3f(0.7937, 0.7937, 0.7937);
-
-    auto l1 = light{{20, 20, 20}, {500, 500, 500}};
-    auto l2 = light{{-20, 20, 0}, {500, 500, 500}};
-
-    std::vector<light> lights = {l1, l2};
-    Eigen::Vector3f amb_light_intensity{10, 10, 10};
-    Eigen::Vector3f eye_pos{0, 0, 10};
-
-    float p = 150;
-
-    Eigen::Vector3f color = texture_color;
-    Eigen::Vector3f point = payload.view_pos;
-    Eigen::Vector3f normal = payload.normal;
-
-    Eigen::Vector3f result_color = {0, 0, 0};
-
-    Vector3f viewVector = (eye_pos - point).normalized();
-    for (auto& light : lights)
-    {
-        auto lightVector = light.position - point;
-        auto lightUnitVector = lightVector.normalized();
-        auto distSqr = lightVector.squaredNorm();
-
-        // 漫反射
-        auto reflect = MAX(normal.dot(lightUnitVector), 0);
-        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
-
-        // 高光项
-        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
-        auto mirror = MAX(normal.dot(halfUnitVector), 0);
-        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
-
-        // 环境光
-        auto ambient = ka.cwiseProduct(amb_light_intensity);
-
-        result_color += diffuse;
-        result_color += specular;
-        result_color += ambient;
-
-        // TODO: For each light source in the code, calculate what the *ambient*, *diffuse*, and *specular* 
-        // components are. Then, accumulate that result on the *result_color* object.
-    }
-
-    return result_color * 255.f;
+    // 漫反射颜色来自纹理
+    Eigen::Vector3f kd = sample_color(payload.texture, payload.tex_coords, payload.bilinear) / 255.f;
+    material m{ Eigen::Vector3f(0.005f, 0.005f, 0.005f),  kd,
+                Eigen::Vector3f(0.7937f, 0.7937f, 0.7937f), 150.f };
+    return blinn_phong(m, payload.view_pos, payload.normal.normalized());
 }
 
 Eigen::Vector3f phong_fragment_shader(const fragment_shader_payload& payload)
 {
-    Eigen::Vector3f ka = Eigen::Vector3f(0.005, 0.005, 0.005);
-    Eigen::Vector3f kd = payload.color;
-    Eigen::Vector3f ks = Eigen::Vector3f(0.7937, 0.7937, 0.7937);
-
-    auto l1 = light{{20, 20, 20}, {500, 500, 500}};
-    auto l2 = light{{-20, 20, 0}, {500, 500, 500}};
-
-    std::vector<light> lights = {l1, l2};
-    Eigen::Vector3f amb_light_intensity{10, 10, 10};
-    Eigen::Vector3f eye_pos{0, 0, 10};
-
-    float p = 150;
-
-    Eigen::Vector3f color = payload.color;
-    Eigen::Vector3f point = payload.view_pos;
-    Eigen::Vector3f normal = payload.normal;
-
-    Eigen::Vector3f result_color = {0, 0, 0};
-
-    Vector3f viewVector = (eye_pos - point).normalized();
-    for (auto& light : lights)
-    {
-        auto lightVector = light.position - point;
-        auto lightUnitVector = lightVector.normalized();
-        auto distSqr = lightVector.squaredNorm();
-
-        // 漫反射
-        auto reflect = MAX(normal.dot(lightUnitVector), 0);
-        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
-
-        // 高光项
-        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
-        auto mirror = MAX(normal.dot(halfUnitVector), 0);
-        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
-
-        // 环境光
-        auto ambient = ka.cwiseProduct(amb_light_intensity);
-
-        result_color += diffuse;
-        result_color += specular;
-        result_color += ambient;
-
-        // TODO: For each light source in the code, calculate what the *ambient*, *diffuse*, and *specular* 
-        // components are. Then, accumulate that result on the *result_color* object.
-    }
-
-    return result_color * 255.f;
-}
-
-Eigen::Vector3f displacement_fragment_shader(const fragment_shader_payload& payload)
-{
-    
-    Eigen::Vector3f ka = Eigen::Vector3f(0.005, 0.005, 0.005);
-    Eigen::Vector3f ks = Eigen::Vector3f(0.7937, 0.7937, 0.7937);
-
-    auto l1 = light{{20, 20, 20}, {500, 500, 500}};
-    auto l2 = light{{-20, 20, 0}, {500, 500, 500}};
-
-    std::vector<light> lights = {l1, l2};
-    Eigen::Vector3f amb_light_intensity{10, 10, 10};
-    Eigen::Vector3f eye_pos{0, 0, 10};
-
-    float p = 150;
-
-    Eigen::Vector3f point = payload.view_pos;
-    Eigen::Vector3f normal = payload.normal;
-
-    float kh = 0.2, kn = 0.1;
-
-    // 0. 纹理颜色当作 kd：位移的细节主要靠 albedo 的变化体现，不能用 payload.color
-    Eigen::Vector3f texture_color(0, 0, 0);
-    if (payload.texture)
-        texture_color = payload.texture->getColor(payload.tex_coords.x(), payload.tex_coords.y()) / 255.f;
-    Eigen::Vector3f kd = texture_color;
-
-    // 1. 构造切线空间 TBN（与 bump_fragment_shader 完全相同）
-    normal = normal.normalized();
-    const Vector3f up(0, 1, 0);
-    const float proj = normal.dot(up); // = n.y()
-    const float s2 = 1.0f - proj * proj; // 1 - y² = x² + z²
-
-    Vector3f t;
-    if (s2 > 1e-6f)
-        t = (up - proj * normal) / sqrt(s2); // 别忘了归一化
-    else
-        t = Vector3f(1, 0, 0); // n 平行 ±Y 时的退化兜底
-
-    const Vector3f b = normal.cross(t); // 副切线
-    Matrix3f tbn;
-    tbn << t, b, normal;
-
-    // 2. 高度图：差分 → 扰动法线；高度值 → 位置位移
-    if (payload.texture)
-    {
-        Texture* const tex = payload.texture;
-        const float deltaU = 1.0f / static_cast<float>(tex->width);
-        const float deltaV = 1.0f / static_cast<float>(tex->height);
-        const Vector2f uv = payload.tex_coords;
-
-        const float h0 = tex->getColor(uv.x(), uv.y()).x();
-        const float hu = tex->getColor(uv.x() + deltaU, uv.y()).x();
-        const float hv = tex->getColor(uv.x(), uv.y() + deltaV).x();
-
-        const float du = kh * kn * (hu - h0); // 差分是小量，所以乘 kh*kn
-        const float dv = kh * kn * (hv - h0);
-
-        const Vector3f ln(-du, -dv, 1.0f);
-        normal = (tbn * ln).normalized(); // 这一行和 bump 一模一样
-
-        // 位移量 = kn * h。量纲是这题最大的坑：getColor 返回 0~255，
-        // 直接写 kn * h 会挤出 0~25 个单位，而模型本身只有 2.5 大，整只牛会被炸开。
-        // 所以先把 h 归一化到 0~1（想要更夸张的鼓起，把 kn 调到 0.5~1.0 即可）。
-        const float height = tex->getColor(uv.x(), uv.y()).norm() / 255.f;
-        point += kn * height * normal; // 注意：沿"扰动后"的法线挤出
-    }
-
-    // 3. Blinn-Phong 光照（公式与 phong_fragment_shader 一致，但 point 已经移动过）
-    Eigen::Vector3f result_color = {0, 0, 0};
-    const Vector3f viewVector = (eye_pos - point).normalized();
-
-    for (auto& light : lights)
-    {
-        auto lightVector = light.position - point;
-        auto lightUnitVector = lightVector.normalized();
-        auto distSqr = lightVector.squaredNorm();
-
-        // 漫反射
-        auto reflect = MAX(normal.dot(lightUnitVector), 0);
-        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
-
-        // 高光项
-        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
-        auto mirror = MAX(normal.dot(halfUnitVector), 0);
-        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
-
-        // 环境光
-        auto ambient = ka.cwiseProduct(amb_light_intensity);
-
-        result_color += diffuse;
-        result_color += specular;
-        result_color += ambient;
-    }
-
-    return result_color * 255.f;
+    // 漫反射颜色来自顶点色（payload.color），不采样纹理
+    material m{ Eigen::Vector3f(0.005f, 0.005f, 0.005f),  payload.color,
+                Eigen::Vector3f(0.7937f, 0.7937f, 0.7937f), 150.f };
+    return blinn_phong(m, payload.view_pos, payload.normal.normalized());
 }
 
 Eigen::Vector3f bump_fragment_shader(const fragment_shader_payload& payload)
 {
-    Eigen::Vector3f return_color = { 0, 0, 0 };
-    if (payload.texture)
-    {
-        auto tex_coord = payload.tex_coords;
-        return_color = payload.texture->getColor(tex_coord.x(), tex_coord.y());
-    }
-    Eigen::Vector3f texture_color;
-    texture_color << return_color.x(), return_color.y(), return_color.z();
+    const float kh = 0.2f;
+    const float kn = 0.1f;
 
-    Eigen::Vector3f ka = Eigen::Vector3f(0.005, 0.005, 0.005);
-    Eigen::Vector3f kd = texture_color / 255.f;
-    Eigen::Vector3f ks = Eigen::Vector3f(0.7937, 0.7937, 0.7937);
+    // 只扰动法线，不移动位置——这就是 bump 和 displacement 的唯一区别
+    const Eigen::Vector3f normal = perturb_normal(payload.normal.normalized(), payload.texture,
+        payload.tex_coords, kh * kn);
 
-    auto l1 = light{{20, 20, 20}, {500, 500, 500}};
-    auto l2 = light{{-20, 20, 0}, {500, 500, 500}};
-
-    std::vector<light> lights = {l1, l2};
-    Eigen::Vector3f amb_light_intensity{10, 10, 10};
-    Eigen::Vector3f eye_pos{0, 0, 10};
-
-    float p = 150;
-
-    Eigen::Vector3f point = payload.view_pos;
-    Eigen::Vector3f normal = payload.normal;
-
-    // bump
-    float kh = 0.2, kn = 0.1;
-
-    // 1. 构造切线空间 TBN
-    // 需要 t、b、n 三个互相正交的"单位"向量：t 或 b 的长度不为 1 时，
-    // TBN 会把 ln 里的扰动一起缩放，凹凸强度就会随法线朝向变化。
-    normal = normal.normalized(); // 下面假设 |n| = 1，保险起见再归一化一次
-
-    const Vector3f up(0, 1, 0); // 参考的"向上"轴
-    const float proj = normal.dot(up); // = n.y()
-    const float s2 = 1.0f - proj * proj; // = |up - proj*n|² = x² + z²
-
-    Vector3f t;
-    if (s2 > 1e-6f)
-    {
-        t = (up - proj * normal) / sqrt(s2); // 归一化：除以 |up - proj*n| = √s² = s
-    }
-    else
-    {
-        t = Vector3f(1, 0, 0); // n 平行 ±Y 轴时退化，任选一个垂直方向兜底
-    }
-
-    const Vector3f b = normal.cross(t); // n、t 均为单位正交 ⇒ b 天然是单位向量
-    Matrix3f tbn;
-    tbn << t, b, normal;
-
-    // 2. 用纹理的 R 通道当作高度场，前向差分求梯度
-    if (payload.texture)
-    {
-        Texture* const tex = payload.texture;
-        const float deltaU = 1.0f / static_cast<float>(tex->width); // 一个 texel 的 UV 步长
-        const float deltaV = 1.0f / static_cast<float>(tex->height);
-        const Vector2f uv = payload.tex_coords;
-
-        const float h0 = tex->getColor(uv.x(), uv.y()).x();
-        const float hu = tex->getColor(uv.x() + deltaU, uv.y()).x();
-        const float hv = tex->getColor(uv.x(), uv.y() + deltaV).x();
-
-        const float du = kh * kn * (hu - h0);
-        const float dv = kh * kn * (hv - h0);
-
-        const Vector3f ln(-du, -dv, 1.0f);
-        normal = (tbn * ln).normalized();
-    }
-
-    // TODO: Implement bump mapping here
-    // Let n = normal = (x, y, z)
-    // Vector t = (x*y/sqrt(x*x+z*z),sqrt(x*x+z*z),z*y/sqrt(x*x+z*z))
-    // Vector b = n cross product t
-    // Matrix TBN = [t b n]
-    // dU = kh * kn * (h(u+1/w,v)-h(u,v))
-    // dV = kh * kn * (h(u,v+1/h)-h(u,v))
-    // Vector ln = (-dU, -dV, 1)
-    // Normal n = normalize(TBN * ln)
-
-    Eigen::Vector3f result_color = { 0, 0, 0 };
-
-    Vector3f viewVector = (eye_pos - point).normalized();
-    for (auto& light : lights)
-    {
-        auto lightVector = light.position - point;
-        auto lightUnitVector = lightVector.normalized();
-        auto distSqr = lightVector.squaredNorm();
-
-        // 漫反射
-        auto reflect = MAX(normal.dot(lightUnitVector), 0);
-        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
-
-        // 高光项
-        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
-        auto mirror = MAX(normal.dot(halfUnitVector), 0);
-        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
-
-        // 环境光
-        auto ambient = ka.cwiseProduct(amb_light_intensity);
-
-        result_color += diffuse;
-        result_color += specular;
-        result_color += ambient;
-    }
-
-    return result_color * 255.f;
+    // 漫反射颜色来自纹理（高度图同时当了 albedo，作业模板就是这么用的）
+    Eigen::Vector3f kd = sample_color(payload.texture, payload.tex_coords, payload.bilinear) / 255.f;
+    material m{ Eigen::Vector3f(0.005f, 0.005f, 0.005f),  kd,
+                Eigen::Vector3f(0.7937f, 0.7937f, 0.7937f), 150.f };
+    return blinn_phong(m, payload.view_pos, normal);
 }
+
+Eigen::Vector3f displacement_fragment_shader(const fragment_shader_payload& payload)
+{
+    // 与 bump 的区别只有一个：位移贴图把 shading point 沿法线推到新位置
+    const float kh = 0.2f;
+    const float kn = 0.1f;
+
+    const Eigen::Vector3f normal = perturb_normal(payload.normal.normalized(), payload.texture,
+                                                  payload.tex_coords, kh * kn);
+    // 高度归一到 [0,1]，再乘 kn 作为位移量（单位与模型一致，模型高约 2.5）
+    const float height = sample_height(payload.texture, payload.tex_coords, payload.bilinear);
+    const Eigen::Vector3f point = payload.view_pos + kn * height * normal;
+
+    Eigen::Vector3f kd = sample_color(payload.texture, payload.tex_coords, payload.bilinear) / 255.f;
+    material m{ Eigen::Vector3f(0.005f, 0.005f, 0.005f),  kd,
+                Eigen::Vector3f(0.7937f, 0.7937f, 0.7937f), 150.f };
+    return blinn_phong(m, point, normal);
+}
+
+// ======================== 命令行 shader 表 ========================
+// 加一个新 shader 只需要在这里加一行：关键字、函数、需要的纹理、是否双线性采样
+
+struct shader_entry
+{
+    const char* name;
+    std::function<Eigen::Vector3f(fragment_shader_payload)> fn;
+    const char* texture;    // nullptr 表示沿用默认纹理
+    bool bilinear;
+};
+
+static const std::vector<shader_entry> kShaders = {
+    { "texture",                texture_fragment_shader,      "spot_texture.png",    false },
+    { "texture_bilinear",       texture_fragment_shader,      "spot_texture.png",    true  },
+    { "texture_small",          texture_fragment_shader,      "spot_texture_64.png", false },
+    { "texture_small_bilinear", texture_fragment_shader,      "spot_texture_64.png", true  },
+    { "normal",                 normal_fragment_shader,       nullptr,               false },
+    { "phong",                  phong_fragment_shader,        nullptr,               false },
+    { "bump",                   bump_fragment_shader,         "hmap.jpg",            false },
+    { "displacement",           displacement_fragment_shader, "hmap.jpg",            false },
+};
 
 int main(int argc, const char** argv)
 {
@@ -471,11 +343,7 @@ int main(int argc, const char** argv)
 
     rst::rasterizer r(700, 700);
 
-    //auto texture_path = "spot_texture_64.png";
-    auto texture_path = "spot_texture.png";
-    //auto texture_path = "hmap.jpg";
-    r.set_texture(Texture(obj_path + texture_path));
-
+    r.set_texture(Texture(obj_path + "spot_texture.png"));
     std::function<Eigen::Vector3f(fragment_shader_payload)> active_shader = displacement_fragment_shader;
 
     if (argc >= 2)
@@ -483,59 +351,23 @@ int main(int argc, const char** argv)
         command_line = true;
         filename = std::string(argv[1]);
 
-        if (argc == 3 && std::string(argv[2]) == "texture")
+        if (argc == 3)
         {
-            std::cout << "Rasterizing using the texture shader\n";
-            active_shader = texture_fragment_shader;
-            texture_path = "spot_texture.png";
-            r.set_texture(Texture(obj_path + texture_path));
-        }
-        else if (argc == 3 && std::string(argv[2]) == "texture_bilinear")
-        {
-            std::cout << "Rasterizing using the texture shader (bilinear)\n";
-            active_shader = texture_fragment_shader;
-            g_use_bilinear = true;
-            texture_path = "spot_texture.png";
-            r.set_texture(Texture(obj_path + texture_path));
-        }
-        else if (argc == 3 && std::string(argv[2]) == "texture_small")
-        {
-            std::cout << "Rasterizing using the texture shader (nearest, 64x64)\n";
-            active_shader = texture_fragment_shader;
-            texture_path = "spot_texture_64.png";
-            r.set_texture(Texture(obj_path + texture_path));
-        }
-        else if (argc == 3 && std::string(argv[2]) == "texture_small_bilinear")
-        {
-            std::cout << "Rasterizing using the texture shader (bilinear, 64x64)\n";
-            active_shader = texture_fragment_shader;
-            g_use_bilinear = true;
-            texture_path = "spot_texture_64.png";
-            r.set_texture(Texture(obj_path + texture_path));
-        }
-        else if (argc == 3 && std::string(argv[2]) == "normal")
-        {
-            std::cout << "Rasterizing using the normal shader\n";
-            active_shader = normal_fragment_shader;
-        }
-        else if (argc == 3 && std::string(argv[2]) == "phong")
-        {
-            std::cout << "Rasterizing using the phong shader\n";
-            active_shader = phong_fragment_shader;
-        }
-        else if (argc == 3 && std::string(argv[2]) == "bump")
-        {
-            std::cout << "Rasterizing using the bump shader\n";
-            active_shader = bump_fragment_shader;
-            texture_path = "hmap.jpg";   // bump/displacement 要用高度图
-            r.set_texture(Texture(obj_path + texture_path));
-        }
-        else if (argc == 3 && std::string(argv[2]) == "displacement")
-        {
-            std::cout << "Rasterizing using the displacement shader\n";
-            active_shader = displacement_fragment_shader;
-            texture_path = "hmap.jpg";   // bump/displacement 要用高度图
-            r.set_texture(Texture(obj_path + texture_path));
+            const std::string mode = argv[2];
+            auto it = std::find_if(kShaders.begin(), kShaders.end(),
+                                   [&](const shader_entry& e) { return mode == e.name; });
+            if (it == kShaders.end())
+            {
+                std::cerr << "unknown shader: " << mode << "\n";
+                return 1;
+            }
+
+            active_shader = it->fn;
+            r.set_bilinear(it->bilinear);              // 采样方式随 payload 传给 shader
+            if (it->texture != nullptr)                // normal/phong 沿用默认纹理
+                r.set_texture(Texture(obj_path + it->texture));
+
+            std::cout << "Rasterizing using the " << it->name << " shader\n";
         }
     }
 

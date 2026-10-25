@@ -72,6 +72,8 @@ namespace rst
 
         void set_texture(Texture tex) { texture = tex; }
 
+        void set_bilinear(bool b) { bilinear = b; }
+
         void set_vertex_shader(std::function<Eigen::Vector3f(vertex_shader_payload)> vert_shader);
         void set_fragment_shader(std::function<Eigen::Vector3f(fragment_shader_payload)> frag_shader);
 
@@ -103,6 +105,7 @@ namespace rst
         std::map<int, std::vector<Eigen::Vector3f>> nor_buf;
 
         std::optional<Texture> texture;
+        bool bilinear = false;      // 纹理采样方式，构造 payload 时下发给 shader
 
         std::function<Eigen::Vector3f(fragment_shader_payload)> fragment_shader;
         std::function<Eigen::Vector3f(vertex_shader_payload)> vertex_shader;
