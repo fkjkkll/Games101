@@ -30,23 +30,37 @@ void naive_bezier(const std::vector<cv::Point2f> &points, cv::Mat &window)
     }
 }
 
-cv::Point2f recursive_bezier(const std::vector<cv::Point2f> &control_points, float t) 
+cv::Point2f recursive_bezier(const std::vector<cv::Point2f> &control_points, double t)
 {
-    // TODO: Implement de Casteljau's algorithm
-    return cv::Point2f();
+    size_t count = control_points.size();
+    if (count == 1)
+        return control_points[0];
 
+    std::vector<cv::Point2f> next_control_points;
+    next_control_points.reserve(count - 1);
+
+    for (size_t i = 1; i < count; ++i) {
+        auto new_point = control_points[i - 1] * (1 - t) + control_points[i] * t;
+        next_control_points.push_back(new_point);
+    }
+
+    return recursive_bezier(next_control_points, t);
 }
 
 void bezier(const std::vector<cv::Point2f> &control_points, cv::Mat &window) 
 {
-    // TODO: Iterate through all t = 0 to t = 1 with small steps, and call de Casteljau's 
-    // recursive Bezier algorithm.
+    if (control_points.empty()) return;
 
+    for (double t = 0.0; t <= 1.0; t += 0.001) {
+        auto point = recursive_bezier(control_points, t);
+        window.at<cv::Vec3b>(point.y, point.x)[1] = 255;
+    }
 }
 
 int main() 
 {
     cv::Mat window = cv::Mat(700, 700, CV_8UC3, cv::Scalar(0));
+    // BGR2RGB: 红绿蓝 -> 蓝绿红
     cv::cvtColor(window, window, cv::COLOR_BGR2RGB);
     cv::namedWindow("Bezier Curve", cv::WINDOW_AUTOSIZE);
 
@@ -63,7 +77,7 @@ int main()
         if (control_points.size() == 4) 
         {
             naive_bezier(control_points, window);
-            //   bezier(control_points, window);
+            bezier(control_points, window);
 
             cv::imshow("Bezier Curve", window);
             cv::imwrite("my_bezier_curve.png", window);
