@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <opencv2/opencv.hpp>
 
 #include "global.hpp"
@@ -228,7 +228,6 @@ Eigen::Vector3f displacement_fragment_shader(const fragment_shader_payload& payl
 {
     
     Eigen::Vector3f ka = Eigen::Vector3f(0.005, 0.005, 0.005);
-    Eigen::Vector3f kd = payload.color;
     Eigen::Vector3f ks = Eigen::Vector3f(0.7937, 0.7937, 0.7937);
 
     auto l1 = light{{20, 20, 20}, {500, 500, 500}};
@@ -240,43 +239,101 @@ Eigen::Vector3f displacement_fragment_shader(const fragment_shader_payload& payl
 
     float p = 150;
 
-    Eigen::Vector3f color = payload.color; 
     Eigen::Vector3f point = payload.view_pos;
     Eigen::Vector3f normal = payload.normal;
 
     float kh = 0.2, kn = 0.1;
-    
-    // TODO: Implement displacement mapping here
-    // Let n = normal = (x, y, z)
-    // Vector t = (x*y/sqrt(x*x+z*z),sqrt(x*x+z*z),z*y/sqrt(x*x+z*z))
-    // Vector b = n cross product t
-    // Matrix TBN = [t b n]
-    // dU = kh * kn * (h(u+1/w,v)-h(u,v))
-    // dV = kh * kn * (h(u,v+1/h)-h(u,v))
-    // Vector ln = (-dU, -dV, 1)
-    // Position p = p + kn * n * h(u,v)
-    // Normal n = normalize(TBN * ln)
 
+    // 0. 纹理颜色当作 kd：位移的细节主要靠 albedo 的变化体现，不能用 payload.color
+    Eigen::Vector3f texture_color(0, 0, 0);
+    if (payload.texture)
+        texture_color = payload.texture->getColor(payload.tex_coords.x(), payload.tex_coords.y()) / 255.f;
+    Eigen::Vector3f kd = texture_color;
 
+    // 1. 构造切线空间 TBN（与 bump_fragment_shader 完全相同）
+    normal = normal.normalized();
+    const Vector3f up(0, 1, 0);
+    const float proj = normal.dot(up); // = n.y()
+    const float s2 = 1.0f - proj * proj; // 1 - y² = x² + z²
+
+    Vector3f t;
+    if (s2 > 1e-6f)
+        t = (up - proj * normal) / sqrt(s2); // 别忘了归一化
+    else
+        t = Vector3f(1, 0, 0); // n 平行 ±Y 时的退化兜底
+
+    const Vector3f b = normal.cross(t); // 副切线
+    Matrix3f tbn;
+    tbn << t, b, normal;
+
+    // 2. 高度图：差分 → 扰动法线；高度值 → 位置位移
+    if (payload.texture)
+    {
+        Texture* const tex = payload.texture;
+        const float deltaU = 1.0f / static_cast<float>(tex->width);
+        const float deltaV = 1.0f / static_cast<float>(tex->height);
+        const Vector2f uv = payload.tex_coords;
+
+        const float h0 = tex->getColor(uv.x(), uv.y()).x();
+        const float hu = tex->getColor(uv.x() + deltaU, uv.y()).x();
+        const float hv = tex->getColor(uv.x(), uv.y() + deltaV).x();
+
+        const float du = kh * kn * (hu - h0); // 差分是小量，所以乘 kh*kn
+        const float dv = kh * kn * (hv - h0);
+
+        const Vector3f ln(-du, -dv, 1.0f);
+        normal = (tbn * ln).normalized(); // 这一行和 bump 一模一样
+
+        // 位移量 = kn * h。量纲是这题最大的坑：getColor 返回 0~255，
+        // 直接写 kn * h 会挤出 0~25 个单位，而模型本身只有 2.5 大，整只牛会被炸开。
+        // 所以先把 h 归一化到 0~1（想要更夸张的鼓起，把 kn 调到 0.5~1.0 即可）。
+        const float height = tex->getColor(uv.x(), uv.y()).norm() / 255.f;
+        point += kn * height * normal; // 注意：沿"扰动后"的法线挤出
+    }
+
+    // 3. Blinn-Phong 光照（公式与 phong_fragment_shader 一致，但 point 已经移动过）
     Eigen::Vector3f result_color = {0, 0, 0};
+    const Vector3f viewVector = (eye_pos - point).normalized();
 
     for (auto& light : lights)
     {
-        // TODO: For each light source in the code, calculate what the *ambient*, *diffuse*, and *specular* 
-        // components are. Then, accumulate that result on the *result_color* object.
+        auto lightVector = light.position - point;
+        auto lightUnitVector = lightVector.normalized();
+        auto distSqr = lightVector.squaredNorm();
 
+        // 漫反射
+        auto reflect = MAX(normal.dot(lightUnitVector), 0);
+        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
 
+        // 高光项
+        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
+        auto mirror = MAX(normal.dot(halfUnitVector), 0);
+        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
+
+        // 环境光
+        auto ambient = ka.cwiseProduct(amb_light_intensity);
+
+        result_color += diffuse;
+        result_color += specular;
+        result_color += ambient;
     }
 
     return result_color * 255.f;
 }
 
-
 Eigen::Vector3f bump_fragment_shader(const fragment_shader_payload& payload)
 {
-    
+    Eigen::Vector3f return_color = { 0, 0, 0 };
+    if (payload.texture)
+    {
+        auto tex_coord = payload.tex_coords;
+        return_color = payload.texture->getColor(tex_coord.x(), tex_coord.y());
+    }
+    Eigen::Vector3f texture_color;
+    texture_color << return_color.x(), return_color.y(), return_color.z();
+
     Eigen::Vector3f ka = Eigen::Vector3f(0.005, 0.005, 0.005);
-    Eigen::Vector3f kd = payload.color;
+    Eigen::Vector3f kd = texture_color / 255.f;
     Eigen::Vector3f ks = Eigen::Vector3f(0.7937, 0.7937, 0.7937);
 
     auto l1 = light{{20, 20, 20}, {500, 500, 500}};
@@ -288,12 +345,53 @@ Eigen::Vector3f bump_fragment_shader(const fragment_shader_payload& payload)
 
     float p = 150;
 
-    Eigen::Vector3f color = payload.color; 
     Eigen::Vector3f point = payload.view_pos;
     Eigen::Vector3f normal = payload.normal;
 
-
+    // bump
     float kh = 0.2, kn = 0.1;
+
+    // 1. 构造切线空间 TBN
+    // 需要 t、b、n 三个互相正交的"单位"向量：t 或 b 的长度不为 1 时，
+    // TBN 会把 ln 里的扰动一起缩放，凹凸强度就会随法线朝向变化。
+    normal = normal.normalized(); // 下面假设 |n| = 1，保险起见再归一化一次
+
+    const Vector3f up(0, 1, 0); // 参考的"向上"轴
+    const float proj = normal.dot(up); // = n.y()
+    const float s2 = 1.0f - proj * proj; // = |up - proj*n|² = x² + z²
+
+    Vector3f t;
+    if (s2 > 1e-6f)
+    {
+        t = (up - proj * normal) / sqrt(s2); // 归一化：除以 |up - proj*n| = √s² = s
+    }
+    else
+    {
+        t = Vector3f(1, 0, 0); // n 平行 ±Y 轴时退化，任选一个垂直方向兜底
+    }
+
+    const Vector3f b = normal.cross(t); // n、t 均为单位正交 ⇒ b 天然是单位向量
+    Matrix3f tbn;
+    tbn << t, b, normal;
+
+    // 2. 用纹理的 R 通道当作高度场，前向差分求梯度
+    if (payload.texture)
+    {
+        Texture* const tex = payload.texture;
+        const float deltaU = 1.0f / static_cast<float>(tex->width); // 一个 texel 的 UV 步长
+        const float deltaV = 1.0f / static_cast<float>(tex->height);
+        const Vector2f uv = payload.tex_coords;
+
+        const float h0 = tex->getColor(uv.x(), uv.y()).x();
+        const float hu = tex->getColor(uv.x() + deltaU, uv.y()).x();
+        const float hv = tex->getColor(uv.x(), uv.y() + deltaV).x();
+
+        const float du = kh * kn * (hu - h0);
+        const float dv = kh * kn * (hv - h0);
+
+        const Vector3f ln(-du, -dv, 1.0f);
+        normal = (tbn * ln).normalized();
+    }
 
     // TODO: Implement bump mapping here
     // Let n = normal = (x, y, z)
@@ -305,9 +403,31 @@ Eigen::Vector3f bump_fragment_shader(const fragment_shader_payload& payload)
     // Vector ln = (-dU, -dV, 1)
     // Normal n = normalize(TBN * ln)
 
+    Eigen::Vector3f result_color = { 0, 0, 0 };
 
-    Eigen::Vector3f result_color = {0, 0, 0};
-    result_color = normal;
+    Vector3f viewVector = (eye_pos - point).normalized();
+    for (auto& light : lights)
+    {
+        auto lightVector = light.position - point;
+        auto lightUnitVector = lightVector.normalized();
+        auto distSqr = lightVector.squaredNorm();
+
+        // 漫反射
+        auto reflect = MAX(normal.dot(lightUnitVector), 0);
+        Vector3f diffuse = kd.cwiseProduct(light.intensity / distSqr) * reflect;
+
+        // 高光项
+        auto halfUnitVector = (lightUnitVector + viewVector).normalized();
+        auto mirror = MAX(normal.dot(halfUnitVector), 0);
+        auto specular = ks.cwiseProduct(light.intensity / distSqr) * pow(mirror, p);
+
+        // 环境光
+        auto ambient = ka.cwiseProduct(amb_light_intensity);
+
+        result_color += diffuse;
+        result_color += specular;
+        result_color += ambient;
+    }
 
     return result_color * 255.f;
 }
@@ -348,9 +468,10 @@ int main(int argc, const char** argv)
     rst::rasterizer r(700, 700);
 
     auto texture_path = "spot_texture.png";
+    //auto texture_path = "hmap.jpg";
     r.set_texture(Texture(obj_path + texture_path));
 
-    std::function<Eigen::Vector3f(fragment_shader_payload)> active_shader = texture_fragment_shader;
+    std::function<Eigen::Vector3f(fragment_shader_payload)> active_shader = displacement_fragment_shader;
 
     if (argc >= 2)
     {
@@ -378,11 +499,15 @@ int main(int argc, const char** argv)
         {
             std::cout << "Rasterizing using the bump shader\n";
             active_shader = bump_fragment_shader;
+            texture_path = "hmap.jpg";   // bump/displacement 要用高度图
+            r.set_texture(Texture(obj_path + texture_path));
         }
         else if (argc == 3 && std::string(argv[2]) == "displacement")
         {
-            std::cout << "Rasterizing using the bump shader\n";
+            std::cout << "Rasterizing using the displacement shader\n";
             active_shader = displacement_fragment_shader;
+            texture_path = "hmap.jpg";   // bump/displacement 要用高度图
+            r.set_texture(Texture(obj_path + texture_path));
         }
     }
 
