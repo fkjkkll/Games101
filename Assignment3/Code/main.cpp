@@ -112,14 +112,18 @@ struct light
     Eigen::Vector3f intensity;
 };
 
+// Bonus：纹理采样方式的开关（由命令行参数切换，n/f 表示 nearest / bilinear）
+static bool g_use_bilinear = false;
+
 Eigen::Vector3f texture_fragment_shader(const fragment_shader_payload& payload)
 {
     Eigen::Vector3f return_color = {0, 0, 0};
     if (payload.texture)
     {
         auto tex_coord = payload.tex_coords;
-        return_color = payload.texture->getColor(tex_coord.x(), tex_coord.y());
-        // TODO: Get the texture value at the texture coordinates of the current fragment
+        return_color = g_use_bilinear
+                           ? payload.texture->getColorBilinear(tex_coord.x(), tex_coord.y())
+                           : payload.texture->getColor(tex_coord.x(), tex_coord.y());
     }
     Eigen::Vector3f texture_color;
     texture_color << return_color.x(), return_color.y(), return_color.z();
@@ -467,6 +471,7 @@ int main(int argc, const char** argv)
 
     rst::rasterizer r(700, 700);
 
+    //auto texture_path = "spot_texture_64.png";
     auto texture_path = "spot_texture.png";
     //auto texture_path = "hmap.jpg";
     r.set_texture(Texture(obj_path + texture_path));
@@ -483,6 +488,29 @@ int main(int argc, const char** argv)
             std::cout << "Rasterizing using the texture shader\n";
             active_shader = texture_fragment_shader;
             texture_path = "spot_texture.png";
+            r.set_texture(Texture(obj_path + texture_path));
+        }
+        else if (argc == 3 && std::string(argv[2]) == "texture_bilinear")
+        {
+            std::cout << "Rasterizing using the texture shader (bilinear)\n";
+            active_shader = texture_fragment_shader;
+            g_use_bilinear = true;
+            texture_path = "spot_texture.png";
+            r.set_texture(Texture(obj_path + texture_path));
+        }
+        else if (argc == 3 && std::string(argv[2]) == "texture_small")
+        {
+            std::cout << "Rasterizing using the texture shader (nearest, 64x64)\n";
+            active_shader = texture_fragment_shader;
+            texture_path = "spot_texture_64.png";
+            r.set_texture(Texture(obj_path + texture_path));
+        }
+        else if (argc == 3 && std::string(argv[2]) == "texture_small_bilinear")
+        {
+            std::cout << "Rasterizing using the texture shader (bilinear, 64x64)\n";
+            active_shader = texture_fragment_shader;
+            g_use_bilinear = true;
+            texture_path = "spot_texture_64.png";
             r.set_texture(Texture(obj_path + texture_path));
         }
         else if (argc == 3 && std::string(argv[2]) == "normal")
